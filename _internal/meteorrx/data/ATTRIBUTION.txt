@@ -1,0 +1,8 @@
+The MCIR Earth underlay and precipitation colour table are copied from SatDump:
+
+  https://github.com/SatDump/SatDump/blob/master/resources/maps/nasa_hd.jpg
+  https://github.com/SatDump/SatDump/blob/master/resources/lut/WXtoImg-NO_mod_meteor.png
+
+SatDump is licensed under GPL-3.0; see https://github.com/SatDump/SatDump/blob/master/LICENSE.
+The Earth map is based on NASA imagery. These are static display resources;
+received satellite channels and decoded image files are not replaced by them.

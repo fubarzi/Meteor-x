@@ -1,0 +1,3 @@
+"""METEOR-X - Meteor-M LRPT receiver (RTL-SDR, SDRplay RSP, HackRF One, PlutoSDR)."""
+__version__ = "2.0.0"
+__build__ = "2026.11.14.1"
