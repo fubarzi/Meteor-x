@@ -11,9 +11,9 @@ Self-contained: `METEOR-X.exe` + `meteorrx.ini` + a working RTL-SDR driver set.
 
 This folder contains the METEOR-X source and launchers. The user manual is in the sections below, with a French summary near the end.
 
-*Written by Stephan **9H2WB / F5OWB** for the **Malta Amateur Radio League (MARL)**. Free software, GPL-3.0.*
 
-*Version française plus bas.*
+
+
 
 ![METEOR-X icon](_internal/assets/meteor-x.png)
 
