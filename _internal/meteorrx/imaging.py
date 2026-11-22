@@ -109,18 +109,73 @@ def stretch(img: np.ndarray, lo_pct: float = 0.5, hi_pct: float = 99.5) -> np.nd
     return out
 
 
-def channel_images(imager: lrpt.MsuMrImager, fill: bool) -> dict[int, np.ndarray]:
+def channel_images(imager: lrpt.MsuMrImager, fill: bool,
+                   texture_fill: bool | None = None) -> dict[int, np.ndarray]:
     raw = {}
     for ch in imager.channels_present:
         img = imager.get_channel(ch)
         if img.size == 0:
             continue
         raw[ch + 1] = img
-    if not fill:
+    if texture_fill is None:
+        texture_fill = fill
+    if not fill and not texture_fill:
         return raw
-    return {ch: lrpt.fill_missing(img, reference=raw.get(2 if ch == 1 else 1)
-                                  if ch in (1, 2) else None)
-            for ch, img in raw.items()}
+    filled = ({ch: lrpt.fill_missing(img, reference=raw.get(2 if ch == 1 else 1)
+                                         if ch in (1, 2) else None)
+               for ch, img in raw.items()} if fill else
+              {ch: img.copy() for ch, img in raw.items()})
+    return _fill_shared_bands(raw, filled) if texture_fill else filled
+
+
+def _fill_shared_bands(raw: dict[int, np.ndarray], filled: dict[int, np.ndarray]) -> dict[int, np.ndarray]:
+    """Estimate broad lost-frame bands shared by all transmitted image channels.
+
+    Small per-channel gaps are handled by ``lrpt.fill_missing``. When several
+    channels vanish together, their surviving fragments make that interpolation
+    look streaked. Mirror intact neighbouring texture into the band from both
+    edges and blend it through the middle. This is a display estimate, not
+    recovered data.
+    """
+    if not raw or len({img.shape for img in raw.values()}) != 1:
+        return filled
+    h, w = next(iter(raw.values())).shape
+    groups = h // 8
+    if groups < 8:
+        return filled
+    coverage = {ch: (img[:groups * 8] > 0).reshape(groups, 8, w).mean(axis=(1, 2))
+                for ch, img in raw.items()}
+    active = [ch for ch, value in coverage.items() if value.mean() > 0.2]
+    if not active:
+        return filled
+    quality = np.stack([coverage[ch] for ch in active])
+    damaged = quality.mean(axis=0) < 0.85
+    severe = quality.max(axis=0) < 0.25
+    # Join short islands of fragmentary reception inside one lost-frame band.
+    good_edges = np.flatnonzero(np.diff(np.r_[False, ~damaged, False].astype(np.int8)))
+    for a, b in zip(good_edges[::2], good_edges[1::2]):
+        if a > 0 and b < groups and b - a <= 3:
+            damaged[a:b] = True
+    edges = np.flatnonzero(np.diff(np.r_[False, damaged, False].astype(np.int8)))
+    for a, b in zip(edges[::2], edges[1::2]):
+        start, end = int(a * 8), int(b * 8)
+        if (end - start > 320 or end - start < 32 or severe[a:b].sum() < 4
+                or start < 24 or end + 24 > h):
+            continue
+        n = end - start
+        if start < n or h - end < n:
+            continue  # Need a complete intact source strip on both sides.
+        t = ((np.arange(n, dtype=np.float32) + 1) / (n + 1))[:, None]
+        blend = t * t * (3 - 2 * t)
+        for ch in active:
+            img = filled[ch]
+            # Reflected source rows preserve clouds, sea texture and coastlines
+            # at full resolution; the zero-slope blend hides the two joins.
+            top = img[start - n:start][::-1].astype(np.float32)
+            bottom = img[end:end + n][::-1].astype(np.float32)
+            values = top * (1 - blend) + bottom * blend
+            img[start:end] = np.rint(np.clip(values, 1, 255)).astype(np.uint8)
+    return filled
 
 
 def composite(chs: dict[int, np.ndarray], spec: str) -> np.ndarray | None:
@@ -154,11 +209,12 @@ def preview(imager: lrpt.MsuMrImager, prefer: str = "221") -> tuple[str, np.ndar
 
 
 def save_products(imager: lrpt.MsuMrImager, folder: str, prefix: str, composites: list[str], fill: bool,
-                  rotate: bool, ir_inverted: bool, correct: bool = True) -> list[str]:
+                  rotate: bool, ir_inverted: bool, correct: bool = True,
+                  texture_fill: bool | None = None) -> list[str]:
     """Writes the decoded products. With `correct`, a panoramic-corrected copy (`..._corr.png`, 1 km/pixel
     ground spacing, see meteorrx/geometry.py) is written beside each one; the originals are never altered."""
     os.makedirs(folder, exist_ok=True)
-    chs = channel_images(imager, fill)
+    chs = channel_images(imager, fill, texture_fill)
     files = []
 
     def put(name, img):

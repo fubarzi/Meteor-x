@@ -260,7 +260,7 @@ def settings_key(cfg) -> str:
                 f"|{int(cfg.getf('sdr', 'lime_sample_rate', 2.4e6))}|{c}")
     if dev == "pluto":
         return f"pluto|gain {cfg.get('sdr', 'pluto_gain_db', '50')}|{int(cfg.getf('sdr', 'pluto_sample_rate', 2.16e6))}|{c}"
-    return f"file|{cfg.get('sdr', 'file_path', '')}"
+    return f"unknown|{dev}"
 
 
 def cal_key(cfg, profile_id: str | None = None) -> str:

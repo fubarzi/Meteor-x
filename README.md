@@ -1,6 +1,6 @@
-# METEOR-X 2.0.0 — Meteor-M LRPT receiver
+# METEOR-X 3.1.3 — Meteor-M LRPT receiver
 
-Build **2026.11.14.1**. MCIR now uses a detailed Earth underlay and cloud colours; MSA-Precipitation and Infrared (Ch 4) are available in the View selector. TLE updates requested during reception wait until the receiver stops, preventing the network request from blocking SDR sample processing. The RTL-SDR Bias-T checkbox applies immediately during reception and saves the choice for later passes.
+Build **2026.11.22**. **METEOR-X is free and open-source software, based on MeteorRX and released under the GNU GPL v3. It is free to download and use.** This build has a redesigned fluorescent green interface, automatic mapped mosaics, and a live station-weather background.
 
 A deliberately simple Windows application that does one thing: receive **Meteor-M N2-3 / N2-4 LRPT** imagery
 with an **RTL-SDR**, an **SDRplay RSP** (any model), a **HackRF One**, a **LimeSDR Mini** (1.x / 2.0) or a
@@ -9,11 +9,11 @@ with an **RTL-SDR**, an **SDRplay RSP** (any model), a **HackRF One**, a **LimeS
 Pass prediction (TLE), Doppler pre-correction and **signal-triggered recording** are automatic.
 Self-contained: `METEOR-X.exe` + `meteorrx.ini` + a working RTL-SDR driver set.
 
-This folder contains the METEOR-X source and launchers. The user manual is in the sections below, with a French summary near the end.
+The portable package contains the application, configuration template and RTL-SDR driver tools.
 
+*MeteorRX was originally created by Stephan **9H2WB / F5OWB**, an amateur radio operator and developer, for the **Malta Amateur Radio League (MARL)**. METEOR-X includes subsequent interface changes and additional features. See §12 for licensing and attribution.*
 
-
-
+*Version française plus bas.*
 
 ![METEOR-X icon](_internal/assets/meteor-x.png)
 
@@ -21,50 +21,125 @@ This folder contains the METEOR-X source and launchers. The user manual is in th
 
 ## 1. Install and run
 
-1. Keep the complete METEOR-X folder together (including `_internal`, `drivers`, and `meteorrx.ini`).
+1. Keep `METEOR-X.exe`, `meteorrx.ini`, and `drivers` together in one folder. Set your station latitude and longitude in `meteorrx.ini` before enabling automatic scheduling.
 2. Run **`METEOR-X.exe`**. The first start compiles the DSP engine for this PC (20–60 s, a notice is shown);
    later starts take a second or two.
 3. RTL-SDR on a new PC: if the receiver is not found, METEOR-X detects that Windows bound the wrong USB driver
    and offers to start **Zadig** (bundled) to install WinUSB — once per USB port. SDRplay: install the
    *SDRplay API 3.x* from sdrplay.com. HackRF, LimeSDR: see §3b. PlutoSDR: nothing to install (network, §3b).
 
-`meteorrx.ini` (next to the exe) holds all settings; `METEOR-X-cli.exe --selftest` checks an installation.
+`meteorrx.ini` (next to the exe) holds all settings. The optional console build supports `METEOR-X-cli.exe --selftest`.
 
 | Folder content | Purpose |
 |---|---|
 | `METEOR-X.exe` | The application |
-| `METEOR-X-cli.exe` | Console: decode recordings, `--selftest`, `--drivers`, `--live` (receiver diagnostic) |
+| `METEOR-X-cli.exe` (optional) | Console: decode `.cadu` files, `--selftest`, `--drivers`, `--live` (receiver diagnostic) |
 | `meteorrx.ini` | Configuration (commented) |
 | `drivers\rtlsdr\rtlsdr.dll` | RTL-SDR Blog v1.3.6 x64 driver library (V4/V4L/V3/generic) |
 | `drivers\zadig\zadig.exe` | Zadig 2.9, WinUSB installer (signed by Akeo Consulting) |
-| `data\` | TLE cache, `meteorrx.log` |
-| `cache\` | Compiled DSP engine |
-| `_internal\` | Runtime (Python, Qt, NumPy, Numba) |
-
-### Build from this source repository
-
-This repository contains the application source, display assets, and documented driver binaries. It excludes generated executables, recorded IQ/CADU data, caches, and personal `meteorrx.ini` settings. Install Python 3.12 on Windows, then run `powershell -ExecutionPolicy Bypass -File .\build_portable.ps1` from the repository folder. The script creates a local `.venv`, installs the pinned dependencies, builds `dist\METEOR-X.exe`, and copies the `drivers` folder beside it. On first launch, METEOR-X creates a default `meteorrx.ini` there; set your own station position and SDR settings in that file. For source execution without a build, set `PYTHONPATH=_internal` and run `py -3.12 meteor_x_main.py`.
+| `data\` | TLE cache and log, created when the app runs |
+| `cache\` | Compiled DSP engine, created when the app runs |
+| `_internal\` (legacy console layout) | The GUI executable already contains its runtime |
 
 ## 2. Window layout
 
+### Connected receivers
+
+The Receiver profile and Device lists show only SDR hardware detected at launch
+or with **Detect**. Profiles for
+unplugged receivers stay saved and reappear with their settings when those
+receivers are connected and detected again.
+
+### Station weather image
+
+The full header, including the menu row, shows one weather image behind its text
+for the station latitude and longitude in
+`meteorrx.ini`. It updates every 15 minutes from Open-Meteo's current weather
+code and day/night flag, switching among the bundled sky images. The image is
+illustrative, not a live camera view. If the weather service is unavailable at
+startup, the header stays dark; an image older than one hour is hidden
+after a failed refresh. The header background is display-only.
+The compact build badge sits beneath the station callsign on the right.
+Restart METEOR-X after changing the station coordinates in `meteorrx.ini`.
+
+Weather data by [Open-Meteo.com](https://open-meteo.com/), licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The data are used to
+select an illustrative image; the images are not Open-Meteo weather photographs.
+
+### DC spike removal
+
+The **Remove DC spike (centre)** switch under Receiver removes the narrow I/Q
+offset spike at the tuned centre frequency before the RF spectrum and LRPT
+decoder. It works during a reception and is saved as `dc_spike_removal` in the
+`[decoder]` section of `meteorrx.ini`. It starts off. This filter does not reduce
+broadband noise, LNA overload or dropped USB samples.
+
+### RF spectrum floor
+
+The vertical **Floor** slider at the right of the RF spectrum moves the displayed
+45 dB range up or down by up to 25 dB. It is a display adjustment only: it does
+not change receiver gain, decoding, or saved data. The setting is remembered for
+the next launch. The spectrum uses a sharp trace that retains narrow peaks and
+clears when reception stops, so an old trace is not mistaken for a live signal.
+
+### Automatic composites
+
+After each completed reception, METEOR-X builds separate north-up daytime colour
+and nighttime infrared maps from passes received on that local date. Scan lines
+are assigned by whether the sun is above the horizon at the swath centre.
+The night map uses only channel 4 infrared data, inverted and contrast-stretched.
+Daytime colour maps use RGB 124 or RGB 123 when the required channels are present.
+RGB 124 uses channels 1, 2, and 4; RGB 123 uses 1, 2, and 3. A pass missing a
+required channel is skipped for that map. In overlapping daytime swaths, the
+brighter visible-channel pass is placed on top.
+Major cities are marked with compact labels using the `[recording] city_min_population` setting (default 200 000). The image is updated in the background at
+`Documents\MeteorRX\Mosaics\YYYY-MM-DD_rgb124.png`, `YYYY-MM-DD_rgb123.png`,
+or `YYYY-MM-DD_night_ir.png`
+(or under your configured `output_dir`). The matching JSON file lists the passes
+used, and separate `_base.png` and `_channels.png` files keep the map without
+labels and its mapped source channels. The composite viewer has a **View** selector
+for the RGB source, RGB 221, individual received channels, and the false-colour
+products those channels can actually support. Recipes needing absent channels
+remain visible but disabled. It opens on the matching SatDump
+false-colour recipe when mapped source channels are available. **Enhance…** offers colour, infrared contrast, coastlines,
+major cities, mirror, label size, and colour choices for labels and coastlines.
+**Save…** at the bottom right writes an edited PNG with a unique name, without replacing the
+automatically built image. Decoded pass images
+remain in their original folders. Use **Composite** above the image to open the
+folder, view the latest daytime or nighttime map, or rebuild a local date from saved passes. A pass requires its TLE and
+scan-line times; older passes can be rebuilt if their `.cadu` recording exists.
+Set `[recording] mosaic_auto = no` to disable automatic updates.
+Set `[recording] map_text_scale = 2.0` to size text on the live tracker and
+city names on received images and daily maps (0.8–2.5; 1.3 is the built-in default).
+Restart METEOR-X after editing the INI, then rebuild a day's composite to update
+labels in an already saved map.
+
+
 | Left panel (controls & validation) | Right panel (result) |
 |---|---|
-| Receiver: **profile** (● connected / ○ not connected), *Detect*, identity and calibration status; device, gains, Bias-T, *preamp in service* | Live image: RGB 221, RGB 123, AVHRR 221 False Color, Infrared (Ch 4), MCIR, MSA, MSA-Precipitation, MSU-MR 124 False Color, or single channel |
-| Satellite, LRPT mode (auto/72k/80k), Start / Stop, automatic scheduling | *Clear* beside **Received image**; zoom (mouse wheel), pan (drag), *Fit*, *Open .cadu…*, *Open folder*; top-right live map for Meteor-M2-3 and M2-4 with station-relative azimuth and elevation |
+| Receiver: **profile** (● connected / ○ not connected), *Detect*, identity and calibration status; device, gains, Bias-T, *preamp in service* | Live image: RGB 221, RGB 123, RGB 124, individual channels, and the views listed below |
+| Satellite, LRPT mode (auto/72k/80k), Start / Stop, automatic scheduling | *Clear* beside **Received image**; zoom (mouse wheel), pan (drag), *Fit*, *Open image…*, *Open .cadu…*; top-right live map for Meteor-M2-3 and M2-4 with station-relative azimuth and elevation |
 | LEDs: Signal · Viterbi · Frames · Image · Rec, **S-meter** (dBm / S-units, N0, C/N0), **audio monitor** (*Muted / Listen* button + volume: FM audio of the channel on the PC speakers, to check by ear; muted at start-up, no effect on decoding) | Below the image (always visible, height adjustable): **next passes** (local time, max elevation, direction, duration) and the **log** |
-| **Overview** tab: SNR, Viterbi BER, frames OK/bad, packets, stream health, elevation, frequency, Doppler, loop offset, mode and recording time | |
-| **Scopes** tab: eye diagram (I branch, persistence, Q factor), constellation and 137 MHz spectrum with the 137.900 marker (Doppler-shifted) | |
+| **Scopes** panel: eye diagram (I branch, persistence, Q factor), constellation and 137 MHz spectrum with the 137.900 marker (Doppler-shifted) | |
 
 The window opens **maximized** (`[gui] window = maximized`; `fullscreen`, or `last` = size and position of the
 previous session). **F11** toggles full screen, **Esc** leaves it. Panel sizes are remembered (`data\window.json`).
+Use **Colour → Choose interface colour…** in the top bar to change the green highlights;
+**Colour → Default green** restores the original accent. The choice is saved in
+`[gui] accent_color`, and the dark background, images, and warning colours stay unchanged.
 On a small laptop screen (125–150 % display scaling) the left panel scrolls if needed; passes and log stay visible.
+During a live decode, the image fits the pane width and scrolls with the incoming lines:
+up for a northbound pass displayed north-up, down for a southbound pass. Dragging or
+zooming pauses automatic following so you can inspect earlier lines; **Fit** resumes it.
 
-The live tracker shows a flat 2:1 world map with the home longitude in `[station]` at its horizontal centre. A dark ocean background, fine coastline outlines, and a 30° grid match the world tracker display. The tracker fills the right side of the image pane, with the map centred vertically. Use the mouse wheel to zoom around the pointer, drag to pan, and double-click to return to the home view. It moves both markers every second using SGP4. Dim lines show the previous 45 minutes of each ground track; bright lines show the next 45 minutes. A translucent region around each satellite shows its geometric receiving horizon (0° elevation), computed from the live TLE altitude. This is a visibility limit, not a guarantee of signal quality. Its clock uses the computer's local time zone, matching the local times in the pass table.
+The live tracker shows a flat 2:1 world map with the home longitude in `[station]` at its horizontal centre. A dark ocean background, fine coastline outlines, and a 30° grid match the world tracker display. It labels only major cities (population at least 5 million), with at most 15 labels and spacing to avoid overlap. The tracker fills the right side of the image pane, with the map centred vertically. Use the mouse wheel to zoom around the pointer, drag to pan, and double-click to return to the home view. It moves both markers every second using SGP4. Dim lines show the previous 45 minutes of each ground track; bright lines show the next 45 minutes. A translucent region around each satellite shows its geometric receiving horizon (0° elevation), computed from the live TLE altitude. This is a visibility limit, not a guarantee of signal quality. Its clock uses the computer's local time zone, matching the local times in the pass table.
 
-The **View** dropdown can switch the most recently decoded image among RGB, individual channels, AVHRR 221 False Color, Infrared (Ch 4), MCIR, MSA, MSA-Precipitation, and MSU-MR 124 False Color when their source channels are present. An unsuccessful later receiver or IQ replay leaves that image available. METEOR-X starts with an empty image pane; use *Open .cadu…* to view a saved pass. *Full image* opens the currently displayed image full-screen, with mouse-wheel zoom, drag-to-pan, *Fit image*, *100%*, and *Close* controls. *Clear* hides the displayed image until a new pass or a saved .cadu is opened; it does not delete saved files.
+The **View** dropdown can switch the most recently decoded image among RGB, individual channels, AVHRR 221 and 3a21 False Color, MSU-MR 124 and AVHRR 124 False Color, Day Microphysics, 10.8 µm Thermal IR, 3.9 µm Shortwave IR, AVHRR 543b and 3b45 IR False Color, MCIR, MSA, and Precipitation Potential. MCIR and MSA colour the decoded channels over a 0.05-degree Natural Earth land mask; the map is an illustrative underlay, not extra satellite data. A selection needing a channel this pass did not transmit displays an unavailable message instead of silently showing another channel. With *Fill missing* enabled (the default), dropped strips are estimated from another channel or nearby rows. The Image enhancements dialog has a separate Repair broad image gaps (estimated) checkbox. When checked, broad gaps shared by the channels are estimated with neighbouring image texture in the live view and saved PNGs straight after each pass. Uncheck it to show and save those gaps without this repair; Interpolate missing lines remains independent. The checkbox is saved for future passes. Estimated pixels are illustrative and must not be used as measured weather data. The original .cadu frames remain available for exact reprocessing. An unsuccessful later reception leaves the last image available. METEOR-X starts with an empty image pane; drag a saved PNG or other image from File Explorer into the Received image pane, or use *Open image…* to choose it. Use *Open .cadu…* to decode a saved pass. A chosen image remains visible until cleared or replaced by a new decoded image. Its View and enhancement controls are disabled because it is already a rendered picture. City labels are slightly larger in newly rendered pass images and mosaics. *Full image* opens the currently displayed image full-screen, with mouse-wheel zoom, drag-to-pan, *Fit image*, *100%*, and *Close* controls. *Clear* hides the displayed image until a new pass, saved image, or .cadu is opened; it does not delete saved files.
 Its TLE cache is `data\tracker_tle.txt`; it checks for fresh elements in the background and displays a stale-TLE warning when an element is more than seven days old.
 
-The extra *View* recipes are display-only. The 221 and 124 views combine decoded channels. Infrared (Ch 4) shows cold cloud tops bright. MCIR and MSA place received clouds over a detailed geolocated Earth image; MCIR also colours likely precipitation when channel 1 is available. MSA-Precipitation requires channels 1 and 4 and highlights cold, bright clouds in green, yellow, and red. These colours are a visual estimate, **not a rainfall measurement**; channel 4 is mid-infrared and can include reflected sunlight. MCIR, MSA, and MSA-Precipitation need a pass TLE and timed scan lines, and show that requirement in the viewer when geolocation is unavailable. The Earth map and precipitation colour table are from SatDump's bundled resources; the map is based on NASA imagery.
+The extra *View* recipes are display-only. The new false-colour, microphysics, and infrared views follow SatDump's raw-channel MSU-MR composites. A pass provides only its transmitted channel subset, so some views may be unavailable. SatDump products that require calibrated radiances or external lookup tables cannot be reproduced from these decoded 8-bit images. **Precipitation Potential** highlights cold-looking, bright cloud structures using channel 5 when present, otherwise channel 4; it is a qualitative cloud proxy and does not measure rainfall or predict precipitation rates. MCIR and MSA colour the cloud image over a land/sea mask derived from the bundled Natural Earth coastline. MCIR and MSA need a pass TLE and timed scan lines, and show that requirement in the viewer when geolocation is unavailable.
+**RGB 123** and **AVHRR 3a21 False Color** require channel 3. When a pass contains channels 1, 2, and 4 instead, use **RGB 124** or **MSU-MR 124 False Color**; channel 3 cannot be reconstructed from that pass.
+At night, the visible channels in RGB 123/124 cannot provide daylight colour. Infrared colourisations may illustrate cloud structure, but they are not true colour.
 
 Menus: **TLE** (update, import a TLE file), **Measurements** (calibration / preamp, §6) and **Drivers** (RTL-SDR driver diagnostics, install the WinUSB
 driver with Zadig, open the log file).
@@ -99,10 +174,9 @@ uses `rtlsdr_read_async` (15 queued USB transfers, as rtl_sdr, SDR# and SatDump 
 The delivered sample rate is measured permanently: *SDR stream* in the measurement panel (100 % = nothing lost,
 ⚠ below 95 % or when the PC drops samples), with a warning in the log. Console check of any receiver:
 
-    MeteorRX-cli --live 60 [--device rtlsdr|sdrplay|hackrf|lime|pluto] [--mode 72k] [--record test.cs16]
+    MeteorRX-cli --live 60 [--device rtlsdr|sdrplay|hackrf|lime|pluto] [--mode 72k]
 
-prints every second the stream rate, samples dropped, SNR, carrier offset, BER and frames, and can keep the raw
-IQ for analysis.
+prints every second the stream rate, samples dropped, SNR, carrier offset, BER and frames.
 
 ## 3b. Other receivers (v1.6.0)
 
@@ -147,10 +221,10 @@ Next to `METEOR-X.exe` (if that folder is read-only, settings go to `%LOCALAPPDA
 | decoder | trigger_snr_db | 3.0 | Recording starts above this SNR or on Viterbi lock |
 | recording | output_dir | Documents\MeteorRX | One sub-folder per pass |
 | recording | pre_aos_s / signal_loss_stop_s | 60 / 90 | Arm before AOS; stop after signal loss or at LOS |
-| recording | save_cadu / save_baseband | yes / yes | Keep frames (SatDump-compatible) / record pass IQ beside `METEOR-X.exe` |
+| recording | save_cadu | yes | Keep decoded frames as `.cadu` (SatDump-compatible) |
 | recording | geometric_correction | yes | Also write `..._corr.png`, panoramic correction, 1 km/pixel (§6b) |
 | recording | purge_empty / purge_days | yes / 0 | Start-up housekeeping: drop folders left empty / delete receptions older than N days (0 = never) |
-| recording | rotate_northbound / composites | yes / 221, 123 | North-up; RGB products |
+| recording | rotate_northbound / composites | yes / 221, 123, 124 | North-up; RGB products |
 | gui | language / auto_start | fr / yes | `fr`, `en`, `it`, `es` or `de` (all texts in `meteorrx/i18n.py`: one table per language, English fills any missing key, so adding a language is one more entry); scheduler on at launch |
 | gui | window | maximized | `maximized`, `fullscreen` or `last` |
 | gui | audio_volume | 50 | Audio monitor volume (0–100); the monitor always starts muted |
@@ -166,23 +240,15 @@ receiver profile** (§5) and are rewritten when another profile is selected.
   signal; products are saved, then the next pass is awaited.
 * **Manual Start / Stop**: choose a satellite (Doppler from its TLE) or *Manual*, then start the receiver at any
   time. The receive-ring restriction applies to automatic scheduling, not the Start button.
-* **IQ file**: device *IQ file*, a WAV (SDR#, SatDump baseband) or raw `.cu8 .cs8 .cs16 .cf32` recording.
-* **Saved pass IQ**: scheduled passes write channel IQ from the pre-AOS minute through reception to
-  `IQ Recordings` beside `METEOR-X.exe` as `.cs16` with a `.json` sidecar (sample rate, frequency, satellite and
-  TLE). Open **TLE › IQ recordings** to replay a recent pass, open the folder, or toggle recording for the next
-  pass. **Open IQ recording…** in that menu can load a saved pass from another folder. The receiver's IQ-file
-  selector also reads the saved sample rate and frequency automatically. Manual sessions without a predicted
-  pass start IQ recording when a signal is detected. IQ uses roughly
-  1.2 MB per second at 300 kS/s; replay leaves the selected hardware receiver configuration unchanged.
-* **Console**: `MeteorRX-cli recording.wav [--rate 1000000] [--center 137.5] [--mode auto]` or
-  `MeteorRX-cli pass.cadu` → PNG products next to the input.
+* **CADU replay**: use **Open .cadu…** to view decoded frames from a previous pass.
+* **Console**: `MeteorRX-cli pass.cadu` → PNG products next to the input.
 
 **Outputs are never overwritten.** Every reception gets a **sequence number** (kept in `data\sequence.json`,
 never reused, survives restarts) in front of its folder and file names, e.g.
 `Documents\MeteorRX\0007_20261027_0912_METEOR-M2-4\0007_20261027_0912_METEOR-M2-4.cadu`, `…_ch1.png … ch6.png`,
 `…_ch4_inv.png`, `…_rgb221.png`, `…_rgb123.png`, `…_info.json` (contains `"session": 7`). Restarting during the
 same pass therefore creates `0008_…` next to `0007_…`. The number is allocated when a file is first written,
-including an IQ file for a scheduled pass. Files are opened in exclusive-create mode and flushed every 2 s (a crash
+including a `.cadu` file for a scheduled pass. Files are opened in exclusive-create mode and flushed every 2 s (a crash
 loses at most 2 s). Re-decoding a `.cadu` writes to `…_products`, then `…_products_2`, etc.; measurement
 reports and the archived log (`meteorrx_<date>.log`) follow the same rule.
 
@@ -367,33 +433,22 @@ checks the AFC on plain QPSK and CW, and checks that mirrored M2-x OQPSK signals
 
 **Still unverified on real data:** the OQPSK half-symbol path with NRZ-M (Meteor-M2-3 / M2-4), the 80k
 interleaved mode and Doppler tracking on a live pass — the older satellite's recording cannot exercise them.
-One baseband recording of an M2-3 / M2-4 pass is the next step (`save_baseband = yes`).
+An externally captured baseband recording of an M2-3 / M2-4 pass is the next validation step.
 
 ## 8. Building the executable
 
-* **`build_exe.bat`** — in the *source* package (`MeteorRX-x.y.z-src.zip`, at the root of the `MeteorRX` folder);
-  the `-win64.zip` package is already the built program and contains no build script. Windows 10/11, Internet: finds or privately installs the official Python 3.12, installs the
-  pinned packages, downloads the drivers from their official releases and **checks their SHA-256** (and Zadig's
-  signature), builds with PyInstaller, runs the self-test **of the built exe**, and writes
-  `dist\MeteorRX-1.7.2-win64.zip`. Set `METEORRX_SIGN_PFX` / `METEORRX_SIGN_PASSWORD` to sign the executables.
-  A rebuild keeps `dist\MeteorRX\meteorrx.ini` and `dist\MeteorRX\data\` (calibrations, receiver profiles,
-  session counter): they are set aside before PyInstaller and put back afterwards (`build_portable.bat` does the
-  same). Received images are in `Documents\MeteorRX` and are never touched by a build.
-* **PyInstaller bootloader** — compiled from source with the Microsoft C++ compiler (see §9). If *Build Tools for
-  Visual Studio* are missing, the script **stops and asks**:
-  `1` install them now (official Microsoft bootstrapper, Authenticode signature checked before it is run, only the
-  *Desktop development with C++* workload, ≈ 2–3 GB download, administrator prompt; if Visual Studio is already
-  present without C++, the workload is added to it; `winget` is used if the download fails),
-  `2` continue with the stock bootloader (higher false-positive risk), `3` stop without installing anything.
-  If the installation fails or the compile fails, it offers `2`/`3` again. Unattended: set
-  `METEORRX_BUILDTOOLS=install` or `=stock` beforehand.
-* **GitHub**: `.github/workflows/ci.yml` runs the test-suite on Windows and Linux for every push and pull request.
-  Pushing a tag `vX.Y.Z` (equal to `__version__`) runs `.github/workflows/release.yml`: tests, MSVC bootloader,
-  build, optional signing (secrets `SIGN_PFX_BASE64`, `SIGN_PFX_PASSWORD`) and a **GitHub Release** with the
-  `-win64.zip` and `-src.zip` packages. Third-party driver binaries are not stored in the repository: they are
-  downloaded and hash-checked by `tools/fetch_drivers.py`.
-* Alternative without any executable of our own: `build_portable.bat` (official signed Python embeddable runtime,
-  shortcut launcher) — useful if a particular PC's antivirus still objects to the exe.
+The corresponding source for METEOR-X 3.1.3 is in this repository: the application modules are in
+`_internal/meteorrx/`, with bundled images and data in `_internal/assets/` and
+`_internal/meteorrx/data/`. The launchers and PyInstaller specifications are at the repository root.
+The Windows downloads are built programs; use the source tree to inspect or modify the software.
+Source repository: https://github.com/fubarzi/Meteor-x
+
+On Windows with Python 3.12 installed, run `build_portable.ps1` from PowerShell in the repository root.
+It creates a local virtual environment, installs `requirements-build.txt`, and runs PyInstaller with
+`METEOR-X.spec`. Alternatively, run `py -3.12 -m PyInstaller METEOR-X.spec` after installing the listed
+packages. The build writes `dist\METEOR-X.exe`. Use the example `meteorrx.ini` in the repository or release package
+for your station settings; do not commit a configured personal copy. The driver license and source
+references are in `drivers/README.txt` and each driver's `SOURCE.txt`.
 
 ## 9. Antivirus (Windows Defender)
 
@@ -439,24 +494,25 @@ a browser).
   `0001_…` and `0002_…` (nothing overwritten), maximized window with passes and log visible.
 * **Not yet verified**: a live pass received with 1.6.1 (the real-signal fix is validated on a real recording,
   offline), real USB hardware outside the bench (Zadig flow, SetupAPI driver detection), Defender's verdict
-  on the rebuilt exe. For the first passes set `save_baseband = yes` so a recording can be replayed (MeteorRX or
-  SatDump) if anything goes wrong.
+  on the rebuilt exe. An external recorder can capture a pass for later replay if needed.
 
 ## 12. Licences
 
-Copyright (C) 2026 Stephan, 9H2WB / F5OWB — Malta Amateur Radio League (MARL).
+Original MeteorRX creator: Stephan, 9H2WB / F5OWB, an amateur radio operator and developer. Original copyright notice: Copyright (C) 2026 Stephan, 9H2WB / F5OWB — Malta Amateur Radio League (MARL).
+
+METEOR-X 3.1.3 (build 2026.11.22) is a modified version with a redesigned interface and additional features. It is free and open-source software released under the GNU General Public License, version 3. Credit for the original code remains with its original authors; credit for subsequent changes belongs to their contributors.
 
 MeteorRX is **GPL-3.0** (`LICENSE`; algorithms derived from SatDump and meteor_decode/meteor_demod, GPL-3.0).
-Details in `THIRD_PARTY_NOTICES.md`. Bundled:
+Bundled components include:
 `rtlsdr.dll` RTL-SDR Blog v1.3.6 (GPL-2.0+), Zadig 2.9 (GPL-3.0) — sources linked in each `SOURCE.txt`; Python
 (PSF), NumPy, Numba, llvmlite (BSD), PySide6/Qt (LGPL-3.0), sgp4 (MIT), certifi (MPL-2.0). The SDRplay API is
 proprietary and not distributed.
 
 ---
 
-# MeteorRX — version française (résumé)
+# METEOR-X — version française (résumé)
 
-*Par Stephan 9H2WB / F5OWB pour la Malta Amateur Radio League (MARL). Téléchargement : page **Releases** ;
+*METEOR-X est un logiciel libre et open source sous GPL-3.0, basé sur MeteorRX créé par Stephan 9H2WB / F5OWB, radioamateur et développeur, pour la Malta Amateur Radio League (MARL). Cette version comprend une interface modifiée et des fonctionnalités supplémentaires. Téléchargement : page **Releases** ;
 mode d'emploi : [docs/MANUAL.md](docs/MANUAL.md) (anglais, résumé en français à la fin).*
 
 **But** : recevoir simplement les images LRPT des Meteor-M N2-3 et N2-4 avec un RTL-SDR, un RSP SDRplay (tous
@@ -489,7 +545,7 @@ deux blocs de traitement ; sa FIFO débordait pendant le traitement → trous to
 comme une trame LRPT dure 114 ms, aucune trame complète ne passait, quel que soit le niveau. Désormais lecture
 asynchrone continue (15 transferts USB en file, comme SatDump / SDR#) et **débit mesuré en permanence** (« Flux
 SDR » : 100 % = aucune perte, ⚠ sinon, avec avertissement dans le journal). Diagnostic console :
-`MeteorRX-cli --live 60 --device rtlsdr --mode 72k --record test.cs16`.
+`MeteorRX-cli --live 60 --device rtlsdr --mode 72k`.
 
 **Pilotes RTL-SDR** : MeteorRX cherche d'abord un `rtlsdr.dll` déjà installé (rtl_dll_dir, SatDump, SDR++, SDR#,
 PATH) et ne l'utilise que s'il convient (DLL 64 bits valide, toutes les fonctions nécessaires, dépendances
@@ -563,4 +619,4 @@ installé sans C++, la charge C++ y est ajoutée), 2 = continuer avec le bootloa
 même passage), profils récepteur, adoption des étalonnages v1.4, fenêtre maximisée ; exe 1.6.0 construit et testé
 sous Wine (autotest, pilote chargé, deux décodages successifs du même fichier IQ → dossiers `0001_…` et `0002_…`). Non encore éprouvé : passage réel reçu en direct avec la 1.6.1 (correctif validé hors ligne sur un enregistrement
 réel), matériel USB réel hors banc, verdict de Defender sur cet exe. Banc mire MARL (−55 dBm) : RTL-SDR 47 dB, LimeSDR Mini 2.0
-50,7 dB, 0 erreur ; HackRF : exemplaire testé défectueux (signal dégradé), commande et flux validés. Pour les premiers passages : `save_baseband = yes`.
+50,7 dB, 0 erreur ; HackRF : exemplaire testé défectueux (signal dégradé), commande et flux validés. Une capture IQ externe peut servir aux essais de décodage ultérieurs.

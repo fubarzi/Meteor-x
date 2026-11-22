@@ -93,21 +93,15 @@ def _clahe_grey(img: np.ndarray, tiles: int = 8, clip: float = 3.0) -> np.ndarra
     iy2 = iy if ty == 1 else iy + 1
     ix2 = ix if tx == 1 else ix + 1
     out = np.empty((h, w), np.float32)
-    # Process rows in batches: a Python loop over every scan line stalls the Qt event loop
-    # for several seconds on a full pass, so the live scopes stop repainting.
-    wx = fx[None, :]
-    x0, x1 = ix[None, :], ix2[None, :]
-    for start in range(0, h, 64):
-        rows = slice(start, min(start + 64, h))
-        g = img[rows]
-        y0, y1 = iy[rows, None], iy2[rows, None]
-        a = maps[y0, x0, g]
-        b = maps[y0, x1, g]
-        c = maps[y1, x0, g]
-        d = maps[y1, x1, g]
-        top = a + (b - a) * wx
-        bot = c + (d - c) * wx
-        out[rows] = top + (bot - top) * fy[rows, None]
+    for row in range(h):
+        g = img[row]
+        a = maps[iy[row], ix][np.arange(w), g]
+        b = maps[iy[row], ix2][np.arange(w), g]
+        c = maps[iy2[row], ix][np.arange(w), g]
+        d = maps[iy2[row], ix2][np.arange(w), g]
+        top = a + (b - a) * fx
+        bot = c + (d - c) * fx
+        out[row] = top + (bot - top) * fy[row]
     return np.clip(out, 0, 255).astype(np.uint8)
 
 

@@ -657,10 +657,6 @@ class Receiver:
             ch = core.Channelizer(self.fs, self.decim, cutoff=95e3, transition=50e3)
             self.channels.append((f, ch))
         self.active_idx = 0
-        # The two configured downlink frequencies are alternatives, not a frequency-hopping stream.
-        # Once a valid CADU identifies the working one, keep it for the rest of this pass. Otherwise
-        # a brief decoder unlock can let a stronger spur on the other frequency steal the receiver.
-        self._verified_freq_idx: int | None = None
         self.afc_hz = 0.0          # carrier offset removed by the AFC (receiver ppm error + residual Doppler)
         self.afc = CarrierAfc(self.chan_rate, rc.afc_max_hz) if rc.afc else None
         self.time_scale = 1.0
@@ -673,7 +669,6 @@ class Receiver:
         self.last_syms = np.zeros(0, np.complex64)
         self.last_wave = np.zeros(0, np.complex64)
         self.last_strobes = np.zeros(0, np.float32)
-        self.baseband_sink = None   # callable(complex64 array) for raw channel IQ recording
         self.audio_sink = None      # callable(complex64 array, rate) for the audio monitor
 
     # -- tuning --------------------------------------------------------------
@@ -712,17 +707,6 @@ class Receiver:
     def active_freq(self) -> float:
         return self.channels[self.active_idx][0]
 
-    def _select_frequency(self, locked_chain):
-        """Acquire either downlink, then stay on the one that delivered a valid frame."""
-        if self._verified_freq_idx is None and any(c.stats.frames_ok > 0 for c in self.chains):
-            self._verified_freq_idx = self.active_idx
-        if locked_chain is None and self.reports and self._verified_freq_idx is None:
-            best = max(range(len(self.reports)), key=lambda i: self.reports[i].snr_db)
-            if best != self.active_idx and self.reports[best].snr_db > self.reports[self.active_idx].snr_db + 3:
-                self.active_idx = best
-                for c in self.chains:
-                    c.demod.reset_loops()
-
     # -- processing ----------------------------------------------------------
     def process(self, iq: np.ndarray):
         iq = np.ascontiguousarray(iq, dtype=np.complex64)
@@ -733,9 +717,14 @@ class Receiver:
             if r is not None:
                 r.freq_hz = f
                 self.reports.append(r)
+        # pick the strongest candidate frequency while nothing is locked
         lc = self.locked_chain
-        # A Viterbi unlock is transient; it must not reset the demodulator onto another channel.
-        self._select_frequency(lc)
+        if lc is None and self.reports:
+            best = max(range(len(self.reports)), key=lambda i: self.reports[i].snr_db)
+            if best != self.active_idx and self.reports[best].snr_db > self.reports[self.active_idx].snr_db + 3:
+                self.active_idx = best
+                for c in self.chains:
+                    c.demod.reset_loops()
         if self.reports:
             self.snr_db = self.reports[self.active_idx].snr_db
         carrier = self.afc is not None and self.afc.detected(time_scale=self.time_scale)
@@ -753,8 +742,6 @@ class Receiver:
                 base = y
         if base is None or len(base) == 0:
             return
-        if self.baseband_sink is not None:
-            self.baseband_sink(base)
         if self.audio_sink is not None:
             try:
                 self.audio_sink(base, self.chan_rate)

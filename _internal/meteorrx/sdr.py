@@ -1,5 +1,5 @@
 """SDR sources: RTL-SDR (librtlsdr), SDRplay RSP (all models, SDRplay API 3.x), HackRF One (libhackrf),
-PlutoSDR (IIOD network protocol, no library) and IQ file playback.
+PlutoSDR (IIOD network protocol, no library).
 
 All hardware sources stream continuously from their own thread into a ring buffer (StreamSource): the
 receiver never stops the USB/network flow while it processes a block. Throughput is measured, so lost
@@ -11,13 +11,12 @@ from __future__ import annotations
 
 import ctypes as C
 import os
-import struct
 import threading
 import time
 
 import numpy as np
 
-from . import core, outputs
+from . import core
 
 
 class SdrError(RuntimeError):
@@ -52,9 +51,8 @@ class Source:
     def stop(self):
         pass
 
-    @property
-    def is_file(self) -> bool:
-        return False
+    def set_gain(self, **_):
+        raise SdrError("live gain is unavailable for this source")
 
     def health(self) -> dict | None:
         """Stream health (hardware sources): delivered/nominal sample rate, samples dropped."""
@@ -301,8 +299,9 @@ class RtlSdrSource(StreamSource):
                 index = i
             else:
                 found = ", ".join(_rtl_strings(L, k)[2] or "?" for k in range(n))
-                raise SdrError(f"Selected RTL-SDR serial {serial} is not connected (found: {found}). "
-                               "Select a connected receiver profile and try again.")
+                self.warning = (f"RTL-SDR serial {serial} (active profile) not connected - using device "
+                                f"{min(index, n - 1)} (serial {found})")
+                index = min(index, n - 1)
         if index >= n:
             raise SdrError(f"RTL-SDR index {index} not present ({n} device(s))")
         man, prod, sn = _rtl_strings(L, index)
@@ -332,13 +331,10 @@ class RtlSdrSource(StreamSource):
                 want = min(list(gains)[:ng], key=lambda g: abs(g - want))
             L.rtlsdr_set_tuner_gain(self.dev, want)
             self.gain_db = want / 10.0
-        self._bias = False
-        try:
-            self.set_bias_tee(bias_tee)
-        except SdrError:
-            L.rtlsdr_close(self.dev)
-            raise
-        self.notes = [f"RTL-SDR Bias-T {'ON' if self._bias else 'OFF'} on serial {sn}"]
+        if bias_tee and hasattr(L, "rtlsdr_set_bias_tee"):
+            L.rtlsdr_set_bias_tee.argtypes = [C.c_void_p, C.c_int]
+            L.rtlsdr_set_bias_tee(self.dev, 1)
+        self._bias = bias_tee
         self.buf = np.empty(1 << 18, dtype=np.uint8)
         self.mode = ""
         self._init_stream()
@@ -356,6 +352,19 @@ class RtlSdrSource(StreamSource):
         self._errors = 0
         self._cb = _RTL_CB(self._on_async)
         self._start_thread(self._stream, "rtlsdr-stream")
+
+    def set_gain(self, gain_db: float) -> str:
+        L = self.lib
+        gains = (C.c_int * 64)()
+        count = L.rtlsdr_get_tuner_gains(self.dev, gains)
+        want = int(round(float(gain_db) * 10))
+        if count > 0:
+            want = min(list(gains)[:min(count, 64)], key=lambda g: abs(g - want))
+        if L.rtlsdr_set_tuner_gain_mode(self.dev, 1) != 0 or L.rtlsdr_set_tuner_gain(self.dev, want) != 0:
+            raise SdrError("RTL-SDR could not change tuner gain")
+        self.gain_db = want / 10.0
+        self.gain_desc = f"{self.gain_db:.1f} dB"
+        return self.gain_desc
 
     def _on_async(self, buf, n, ctx):
         try:
@@ -414,21 +423,6 @@ class RtlSdrSource(StreamSource):
             pass
         self._join(3.0)
         self._close()
-
-    def set_bias_tee(self, enabled: bool):
-        """Apply the GPIO 0 Bias-T setting to the open receiver immediately."""
-        if not hasattr(self.lib, "rtlsdr_set_bias_tee"):
-            if enabled:
-                raise SdrError(f"{self.lib_path} does not provide RTL-SDR Bias-T control")
-            self._bias = False
-            return
-        command = self.lib.rtlsdr_set_bias_tee
-        command.argtypes = [C.c_void_p, C.c_int]
-        command.restype = C.c_int
-        result = command(self.dev, 1 if enabled else 0)
-        if result != 0:
-            raise SdrError(f"RTL-SDR Bias-T {'ON' if enabled else 'OFF'} failed (driver code {result})")
-        self._bias = bool(enabled)
 
     def _close(self):
         try:
@@ -597,6 +591,8 @@ def load_sdrplay(dll_path: str = ""):
     L.sdrplay_api_GetDeviceParams.argtypes = [C.c_void_p, C.POINTER(C.POINTER(_DeviceParams))]
     L.sdrplay_api_Init.argtypes = [C.c_void_p, C.POINTER(_CallbackFns), C.c_void_p]
     L.sdrplay_api_Uninit.argtypes = [C.c_void_p]
+    L.sdrplay_api_Update.argtypes = [C.c_void_p, C.c_int, C.c_uint, C.c_uint]
+    L.sdrplay_api_Update.restype = C.c_int
     L.sdrplay_api_GetErrorString.restype = C.c_char_p
     L.sdrplay_api_GetErrorString.argtypes = [C.c_int]
     return L
@@ -726,7 +722,8 @@ class SdrPlaySource(StreamSource):
         dp = pp.contents
         dev = dp.devParams.contents
         dev.fsFreq.fsHz = self.sample_rate
-        ch = dp.rxChannelA.contents
+        self._rx_params = dp.rxChannelA
+        ch = self._rx_params.contents
         ch.tunerParams.bwType = 1536
         ch.tunerParams.ifType = 0
         ch.tunerParams.rfFreq.rfHz = self.center_hz
@@ -785,6 +782,18 @@ class SdrPlaySource(StreamSource):
         self._chk(self.lib.sdrplay_api_Init(self.device.dev, C.byref(self._cb), None), "Init")
         self.running = True
 
+    def set_gain(self, grdb: int, lna_state: int) -> str:
+        ch = self._rx_params.contents
+        gain = ch.tunerParams.gain
+        gain.gRdB = int(min(59, max(20, grdb)))
+        gain.LNAstate = int(min(SDRPLAY_LNA_MAX.get(self.device.hwVer, 9), max(0, lna_state)))
+        ch.ctrlParams.agc.enable = 0
+        # SDRplay API 3.x: Update_Tuner_Gr | Update_Ctrl_Agc, tuner A.
+        self._chk(self.lib.sdrplay_api_Update(self.device.dev, self.TUNER_A,
+                                             0x00008000 | 0x01000000, 0), "Update gain")
+        self.gain_desc = f"IF reduction {gain.gRdB} dB, LNA state {gain.LNAstate}"
+        return self.gain_desc
+
     def stop(self):
         L = self.lib
         try:
@@ -799,120 +808,6 @@ class SdrPlaySource(StreamSource):
             except Exception:  # noqa: BLE001
                 pass
         self.running = False
-
-
-# ============================================================================
-# File playback
-# ============================================================================
-class FileSource(Source):
-    def __init__(self, path: str, sample_rate: float, center_hz: float, realtime: bool):
-        if not os.path.isfile(path):
-            raise SdrError(f"IQ file not found: {path}")
-        self.path = path
-        self.name = "File: " + os.path.basename(path)
-        self.center_hz = float(center_hz)
-        self.realtime = realtime
-        self.f = open(path, "rb")
-        ext = os.path.splitext(path)[1].lower()
-        self.recording_info = None
-        if ext == ".cs16":
-            try:
-                self.recording_info = outputs.read_iq_recording(path)
-            except ValueError:
-                pass  # generic raw IQ still uses the configured sample rate and centre frequency
-            if self.recording_info is not None:
-                sample_rate = self.recording_info["sample_rate"]
-                self.center_hz = self.recording_info["frequency_hz"]
-        self.offset = 0
-        self.length = os.path.getsize(path)
-        if ext == ".wav":
-            self._parse_wav()
-        else:
-            self.sample_rate = float(sample_rate)
-            self.fmt = {".cu8": "u8", ".u8": "u8", ".cs8": "s8", ".s8": "s8", ".cs16": "s16", ".s16": "s16",
-                        ".raw": "s16", ".cf32": "f32", ".f32": "f32", ".fc32": "f32", ".iq": "u8"}.get(ext, "s16")
-        self.bps = {"u8": 2, "s8": 2, "s16": 4, "f32": 8}[self.fmt]
-        self.f.seek(self.offset)
-        self._t0 = None
-        self._sent = 0
-
-    def _parse_wav(self):
-        f = self.f
-        hdr = f.read(12)
-        if hdr[:4] != b"RIFF" or hdr[8:12] != b"WAVE":
-            raise SdrError("Not a RIFF/WAVE file")
-        fmt = None
-        while True:
-            ch = f.read(8)
-            if len(ch) < 8:
-                raise SdrError("WAV: no data chunk")
-            cid, size = ch[:4], struct.unpack("<I", ch[4:])[0]
-            if cid == b"fmt ":
-                body = f.read(size)
-                tag, nch, rate, _, _, bits = struct.unpack("<HHIIHH", body[:16])
-                if tag == 0xFFFE and len(body) >= 26:
-                    tag = struct.unpack("<H", body[24:26])[0]
-                if nch != 2:
-                    raise SdrError("WAV must be 2-channel IQ")
-                fmt = (tag, rate, bits)
-            elif cid == b"data":
-                self.offset = f.tell()
-                self.length = self.offset + (size if size not in (0, 0xFFFFFFFF) else
-                                             os.path.getsize(self.path) - self.offset)
-                break
-            else:
-                f.seek(size + (size & 1), 1)
-        if fmt is None:
-            raise SdrError("WAV: no fmt chunk")
-        tag, rate, bits = fmt
-        self.sample_rate = float(rate)
-        if tag == 3 and bits == 32:
-            self.fmt = "f32"
-        elif bits == 16:
-            self.fmt = "s16"
-        elif bits == 8:
-            self.fmt = "u8"
-        else:
-            raise SdrError(f"WAV format not supported (tag {tag}, {bits} bits)")
-
-    @property
-    def is_file(self) -> bool:
-        return True
-
-    @property
-    def progress(self) -> float:
-        span = max(1, self.length - self.offset)
-        return min(1.0, (self.f.tell() - self.offset) / span)
-
-    def read(self, max_samples: int) -> np.ndarray | None:
-        remaining = (self.length - self.f.tell()) // self.bps
-        n = int(min(max_samples, remaining))
-        if n <= 0:
-            return None
-        raw = self.f.read(n * self.bps)
-        if self.fmt == "u8":
-            x = (np.frombuffer(raw, np.uint8).astype(np.float32) - 127.4) / 128.0
-        elif self.fmt == "s8":
-            x = np.frombuffer(raw, np.int8).astype(np.float32) / 128.0
-        elif self.fmt == "s16":
-            x = np.frombuffer(raw, "<i2").astype(np.float32) / 32768.0
-        else:
-            x = np.frombuffer(raw, "<f4").astype(np.float32)
-        out = x.view(np.complex64)
-        if self.realtime:
-            if self._t0 is None:
-                self._t0 = time.monotonic()
-            self._sent += len(out)
-            ahead = self._sent / self.sample_rate - (time.monotonic() - self._t0)
-            if ahead > 0:
-                time.sleep(ahead)
-        return out
-
-    def stop(self):
-        try:
-            self.f.close()
-        except Exception:
-            pass
 
 
 def open_source(cfg) -> Source:
@@ -945,8 +840,4 @@ def open_source(cfg) -> Source:
         return PlutoSource((cfg.get("sdr", "pluto_uri", "ip:192.168.2.1") or "ip:192.168.2.1").strip(),
                            cfg.getf("sdr", "pluto_sample_rate", 2.16e6), center,
                            cfg.get("sdr", "pluto_gain_db", "50") or "50")
-    if dev == "file":
-        fc = cfg.getf("sdr", "file_center_mhz", 0.0) * 1e6 or center
-        return FileSource(cfg.get("sdr", "file_path", ""), cfg.getf("sdr", "file_sample_rate", 1e6), fc,
-                          cfg.getb("sdr", "file_realtime", False))
-    raise SdrError(f"Unknown device '{dev}' (rtlsdr | sdrplay | hackrf | lime | pluto | file)")
+    raise SdrError(f"Unknown device '{dev}' (rtlsdr | sdrplay | hackrf | lime | pluto)")

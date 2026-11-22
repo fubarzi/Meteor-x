@@ -535,11 +535,12 @@ class MsuMrImager:
 
 def fill_missing(img: np.ndarray, max_lines: int = 64,
                  reference: np.ndarray | None = None) -> np.ndarray:
-    """Vertical interpolation over short black 8-line strips, per column block.
+    """Fill short missing 8-line strips per column block for display and saved products.
 
     Eight 8-line groups are allowed: a 56-line lost burst is common in an otherwise
     usable pass. A second visible channel can supply detail inside a missing strip;
-    vertical interpolation supplies its baseline and is the fallback without a guide.
+    vertical interpolation supplies its baseline. Guided strips can be longer and
+    reach an image edge when the other channel still has data.
     """
     out = img.copy()
     h = img.shape[0]
@@ -560,28 +561,40 @@ def fill_missing(img: np.ndarray, max_lines: int = 64,
                 j = i
                 while j < nl and col[j]:
                     j += 1
-                if i > 0 and j < nl and (j - i) * 8 <= max_lines:
-                    cols = slice(seg * 112, (seg + 1) * 112)
+                n = (j - i) * 8
+                cols = slice(seg * 112, (seg + 1) * 112)
+                guided = (reference is not None and n <= max(192, max_lines)
+                          and not ref_missing[i:j, seg].any())
+                if guided:
+                    # Match the other visible channel's local brightness at either end.
+                    # A top/bottom edge has only one known neighbour.
+                    offsets = []
+                    for k in (i - 1, j):
+                        if 0 <= k < nl and not ref_missing[k, seg]:
+                            target = img[k * 8:(k + 1) * 8, cols]
+                            guide = reference[k * 8:(k + 1) * 8, cols]
+                            valid = (target > 0) & (guide > 0)
+                            if valid.any():
+                                offsets.append(float(np.median(target[valid].astype(np.float32)
+                                                               - guide[valid].astype(np.float32))))
+                    if offsets:
+                        lo, hi = offsets[0], offsets[-1]
+                        blend = ((np.arange(n, dtype=np.float32) + 1) / (n + 1))[:, None]
+                        values = reference[i * 8:j * 8, cols].astype(np.float32)
+                        values += lo * (1 - blend) + hi * blend
+                        out[i * 8:j * 8, cols] = np.rint(np.clip(values, 1, 255)).astype(np.uint8)
+                        i = j
+                        continue
+                if n <= max_lines and i > 0 and j < nl:
                     top = out[i * 8 - 1, cols].astype(np.float32)
                     bot = out[j * 8, cols].astype(np.float32)
-                    guided = (reference is not None and not ref_missing[i - 1:j + 1, seg].any())
-                    if guided:
-                        before = (img[(i - 1) * 8:i * 8, cols].astype(np.float32)
-                                  - reference[(i - 1) * 8:i * 8, cols])
-                        after = (img[j * 8:(j + 1) * 8, cols].astype(np.float32)
-                                 - reference[j * 8:(j + 1) * 8, cols])
-                        offset_before = float(np.median(before))
-                        offset_after = float(np.median(after))
-                    n = (j - i) * 8
-                    for k in range(n):
-                        w = (k + 1) / (n + 1)
-                        line = top * (1 - w) + bot * w
-                        if guided:
-                            # The neighbouring visible channel retains the actual cloud/land
-                            # detail. Match its brightness using the valid strips on both sides.
-                            offset = offset_before * (1 - w) + offset_after * w
-                            line = reference[i * 8 + k, cols].astype(np.float32) + offset
-                        out[i * 8 + k, cols] = np.rint(np.clip(line, 0, 255)).astype(np.uint8)
+                    blend = ((np.arange(n, dtype=np.float32) + 1) / (n + 1))[:, None]
+                    values = top * (1 - blend) + bot * blend
+                    out[i * 8:j * 8, cols] = np.rint(np.clip(values, 1, 255)).astype(np.uint8)
+                elif n <= max_lines and i == 0 and j < nl:
+                    out[:j * 8, cols] = np.tile(out[j * 8:(j + 1) * 8, cols], (j, 1))
+                elif n <= max_lines and j == nl and i > 0:
+                    out[i * 8:, cols] = np.tile(out[(i - 1) * 8:i * 8, cols], (j - i, 1))
                 i = j
             else:
                 i += 1

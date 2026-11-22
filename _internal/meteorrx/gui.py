@@ -2,37 +2,95 @@
 from __future__ import annotations
 
 import json
+import filecmp
 import os
 import queue
 import re
 import sys
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
 from . import enhance, i18n
-from PySide6.QtCore import QByteArray, QRectF, Qt, QTimer, QUrl
-from PySide6.QtGui import (QAction, QColor, QDesktopServices, QFont, QGuiApplication, QImage, QKeySequence, QPainter,
-                           QPalette, QPen, QPixmap, QShortcut)
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+from PySide6.QtCore import QByteArray, QRectF, Qt, QTimer, QUrl, Signal, QSize
+from PySide6.QtGui import (QAction, QBrush, QColor, QDesktopServices, QFont, QGuiApplication, QImage, QImageReader, QKeySequence, QLinearGradient,
+                           QPainter, QPalette, QPen, QPixmap, QShortcut)
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
+from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
                                QDialog, QFrame, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QGridLayout,
-                               QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
-                               QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
+                               QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMenuBar,
+                               QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
                                QSlider, QSpinBox, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout,
                                QWidget)
 
-from . import __build__, __version__, calib, config, geometry, imaging, lrpt, orbit, outputs, overlay, profiles, sdr, tracker, view_products
+from . import __build__, __version__, calib, config, geometry, imaging, lrpt, orbit, outputs, overlay, profiles, sdr, tracker, view_products, weather
 from .engine import Engine
 
 # ----------------------------------------------------------------------------
 # Translations
 # ----------------------------------------------------------------------------
 T = {code: i18n.texts(code, "gui") for code in i18n.LANGUAGES}   # all UI texts: meteorrx/i18n.py
-DEV_KEYS = ["rtlsdr", "sdrplay", "hackrf", "lime", "pluto", "file"]
+DEV_KEYS = ["rtlsdr", "sdrplay", "hackrf", "lime", "pluto"]
 LIME_ANT = ["auto", "LNAW", "LNAH", "LNAL"]
 BIAS_KEYS = {"rtlsdr": "rtl_bias_tee", "sdrplay": "sdrplay_bias_tee", "hackrf": "hackrf_bias_tee"}
 
-ACCENT = QColor(76, 255, 154)
+DEFAULT_ACCENT = QColor("#4cff9a")
+ACCENT = QColor(DEFAULT_ACCENT)
+
+
+def theme_color(value) -> QColor:
+    """Recolour green highlights while leaving dark panels and neutral text alone."""
+    colour = QColor(value)
+    if ACCENT == DEFAULT_ACCENT:
+        return colour
+    if colour.name().lower() == DEFAULT_ACCENT.name():
+        return QColor(ACCENT)
+    hue, saturation, brightness, alpha = colour.getHsvF()
+    if hue < 0 or saturation < 0.18 or brightness < 0.28:
+        return colour
+    original_hue = DEFAULT_ACCENT.hueF()
+    distance = (hue - original_hue + 0.5) % 1.0 - 0.5
+    if abs(distance) > 0.22:
+        return colour  # warning red, yellow, satellite blue and neutral colours
+    target_hue = ACCENT.hueF()
+    if target_hue < 0:
+        target_hue = original_hue
+    colour.setHsvF((hue + target_hue - original_hue) % 1.0,
+                   min(1.0, saturation * ACCENT.saturationF() / DEFAULT_ACCENT.saturationF()),
+                   brightness, alpha)
+    return colour
+
+
+def recorded_cadu_info(path: str) -> dict:
+    """Find pass metadata for a CADU, including a renamed copy beside its original."""
+    folder = os.path.dirname(path)
+    exact = os.path.splitext(path)[0] + "_info.json"
+
+    def read(info_path):
+        try:
+            with open(info_path, encoding="utf-8") as source:
+                info = json.load(source)
+            return info if isinstance(info, dict) else None
+        except (OSError, ValueError):
+            return None
+
+    info = read(exact)
+    if info is not None:
+        return info
+    try:
+        for name in os.listdir(folder):
+            if not name.endswith("_info.json"):
+                continue
+            info_path = os.path.join(folder, name)
+            original = info_path[:-10] + ".cadu"
+            if info_path != exact and os.path.isfile(original) and filecmp.cmp(path, original, shallow=False):
+                info = read(info_path)
+                if info is not None:
+                    return info
+    except OSError:
+        pass
+    return {}
 
 
 # ----------------------------------------------------------------------------
@@ -45,6 +103,11 @@ def _phosphor_lut() -> np.ndarray:
     b = np.clip(2.2 * x - 1.2, 0, 1) * 0.8 + 0.08 * (1 - x)
     lut = (0xFF << 24) | ((r * 255).astype(np.uint32) << 16) | ((g * 255).astype(np.uint32) << 8) | \
           (b * 255 + 14).clip(0, 255).astype(np.uint32)
+    if ACCENT != DEFAULT_ACCENT:
+        for i, pixel in enumerate(lut):
+            source = QColor.fromRgb(int((pixel >> 16) & 255), int((pixel >> 8) & 255), int(pixel & 255))
+            tinted = theme_color(source)
+            lut[i] = 0xFF000000 | (tinted.red() << 16) | (tinted.green() << 8) | tinted.blue()
     return lut.astype(np.uint32)
 
 
@@ -74,13 +137,20 @@ class DensityWidget(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(8, 12, 10))
+        p.fillRect(self.rect(), theme_color(QColor(4, 16, 19)))
         if self._img is not None:
             p.drawImage(QRectF(self.rect()), self._img)
         self.draw_grid(p)
-        p.setPen(QColor(160, 200, 170))
-        p.setFont(QFont("Consolas", 8))
-        p.drawText(6, 13, self.title)
+        r = self.rect().adjusted(1, 1, -2, -2)
+        p.setPen(QPen(theme_color(QColor(28, 101, 99)), 1))
+        p.drawRect(r)
+        p.setPen(QPen(theme_color(QColor(82, 247, 193)), 2))
+        for x, direction in ((r.left(), 1), (r.right(), -1)):
+            p.drawLine(x, r.top(), x + 15 * direction, r.top())
+            p.drawLine(x, r.bottom(), x + 15 * direction, r.bottom())
+        p.setPen(theme_color(QColor(98, 242, 212)))
+        p.setFont(QFont("Consolas", 8, QFont.Bold))
+        p.drawText(9, 16, self.title.upper())
         if self.overlay:
             p.drawText(self.rect().adjusted(0, 0, -6, -4), Qt.AlignRight | Qt.AlignBottom, self.overlay)
         p.end()
@@ -115,7 +185,7 @@ class EyeWidget(DensityWidget):
 
     def draw_grid(self, p):
         r = self.rect()
-        p.setPen(QPen(QColor(60, 90, 70), 1, Qt.DotLine))
+        p.setPen(QPen(theme_color(QColor(34, 90, 91)), 1, Qt.DotLine))
         for k in (0.25, 0.5, 0.75):
             x = r.left() + k * r.width()
             p.drawLine(int(x), r.top(), int(x), r.bottom())
@@ -141,9 +211,14 @@ class ConstWidget(DensityWidget):
 
     def draw_grid(self, p):
         r = self.rect()
-        p.setPen(QPen(QColor(60, 90, 70), 1, Qt.DotLine))
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(theme_color(QColor(35, 100, 102)), 1, Qt.DotLine))
         p.drawLine(r.center().x(), r.top(), r.center().x(), r.bottom())
         p.drawLine(r.left(), r.center().y(), r.right(), r.center().y())
+        side = min(r.width(), r.height())
+        for fraction in (0.25, 0.42):
+            radius = int(side * fraction)
+            p.drawEllipse(r.center(), radius, radius)
 
 
 class SpectrumWidget(QWidget):
@@ -152,31 +227,55 @@ class SpectrumWidget(QWidget):
         self.setMinimumHeight(90)
         self.data = None
         self.smooth = None
+        self.base_floor = None
+        self.floor_offset_db = 0
+
+    def set_floor_offset(self, db: int):
+        self.floor_offset_db = db
+        self.update()
 
     def update_spec(self, spec):
         if spec is None:
+            if self.data is not None:
+                self.data = self.smooth = self.base_floor = None
+                self.update()
             return
         f, db, marks = spec
+        if self.base_floor is None:
+            self.base_floor = float(np.percentile(db, 5)) - 8.0
         if self.smooth is None or len(self.smooth) != len(db):
             self.smooth = db.copy()
         else:
-            self.smooth = 0.7 * self.smooth + 0.3 * db
+            self.smooth = 0.25 * self.smooth + 0.75 * db
         self.data = (f, self.smooth, marks)
         self.update()
 
     def paintEvent(self, _):
         p = QPainter(self)
         r = self.rect()
-        p.fillRect(r, QColor(8, 12, 10))
+        p.fillRect(r, theme_color(QColor(4, 16, 19)))
+        p.setPen(QPen(theme_color(QColor(28, 80, 83)), 1, Qt.DotLine))
+        for i in range(1, 8):
+            x = r.left() + i * r.width() // 8
+            p.drawLine(x, r.top(), x, r.bottom())
+        for i in range(1, 4):
+            y = r.top() + i * r.height() // 4
+            p.drawLine(r.left(), y, r.right(), y)
         if self.data is not None:
             f, db, marks = self.data
             n = r.width()
-            idx = np.linspace(0, len(db) - 1, n).astype(int)
-            v = db[idx]
-            lo, hi = np.percentile(db, 5) - 3, db.max() + 3
-            ys = r.bottom() - (v - lo) / max(hi - lo, 1) * (r.height() - 14)
-            p.setPen(QPen(ACCENT, 1))
+            edges = np.linspace(0, len(db), n + 1).astype(int)
+            edges[-1] = len(db)
+            sums = np.r_[0.0, np.cumsum(db, dtype=np.float64)]
+            mean = (sums[edges[1:]] - sums[edges[:-1]]) / np.maximum(1, np.diff(edges))
+            peaks = np.maximum.reduceat(db, np.minimum(edges[:-1], len(db) - 1))
+            v = 0.65 * mean + 0.35 * peaks  # retain narrow carriers without a wide glow
+            lo = self.base_floor + self.floor_offset_db
+            hi = lo + 45.0  # fixed span while receiving: a rising floor remains visible
+            bottom, top = r.bottom() - 3, r.top() + 20
+            ys = bottom - np.clip((v - lo) / (hi - lo), 0.0, 1.0) * (bottom - top)
             pts = [(r.left() + i, int(y)) for i, y in enumerate(ys)]
+            p.setPen(QPen(ACCENT, 1))
             for i in range(1, len(pts)):
                 p.drawLine(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1])
             p.setPen(QPen(QColor(230, 180, 60), 1, Qt.DashLine))
@@ -184,6 +283,12 @@ class SpectrumWidget(QWidget):
                 x = r.left() + (m - f[0]) / (f[-1] - f[0]) * r.width()
                 p.drawLine(int(x), r.top() + 12, int(x), r.bottom())
                 p.drawText(int(x) + 3, r.top() + 11, f"{m / 1e6:.3f}")
+        frame = r.adjusted(1, 1, -2, -2)
+        p.setPen(QPen(theme_color(QColor(28, 101, 99)), 1))
+        p.drawRect(frame)
+        p.setPen(theme_color(QColor(98, 242, 212)))
+        p.setFont(QFont("Consolas", 8, QFont.Bold))
+        p.drawText(9, 16, "RF SPECTRUM  /  137 MHz")
         p.end()
 
 
@@ -193,36 +298,50 @@ class Led(QLabel):
         self.set(False)
 
     def set(self, on: bool, warn: bool = False):
-        col = "#3ddc84" if on else ("#e0a030" if warn else "#3a4540")
+        col = theme_color("#3ddc84").name() if on else ("#e0a030" if warn else "#3a4540")
         fg = "#06140c" if on else "#c8d4cc"
         self.setStyleSheet(f"QLabel{{background:{col};color:{fg};border-radius:9px;padding:2px 8px;"
                            f"font-weight:600;font-size:11px}}")
 
 
-class SignalCard(QFrame):
-    """One readable live measurement in the signal overview."""
+class GainSlider(QWidget):
+    """A stepped gain slider with a value readout; callers use hardware units."""
 
-    def __init__(self, caption: str, parent=None):
+    valueChanged = Signal(float)
+
+    def __init__(self, low: float, high: float, step: float = 1.0, unit: str = "dB", parent=None):
         super().__init__(parent)
-        self.setObjectName("signalCard")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 3, 8, 3)
-        layout.setSpacing(0)
-        title = QLabel(caption.upper())
-        title.setObjectName("signalCardTitle")
-        self.value = QLabel("—")
-        self.value.setObjectName("signalCardValue")
-        layout.addWidget(title)
-        layout.addWidget(self.value)
-        self.setMinimumHeight(43)
+        self.low, self.step, self.unit = low, step, unit
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(7)
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, round((high - low) / step))
+        self.slider.setPageStep(max(1, round(5 / step)))
+        self.readout = QLabel()
+        self.readout.setMinimumWidth(49 if step < 1 else 38)
+        self.readout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        row.addWidget(self.slider, 1)
+        row.addWidget(self.readout)
+        self.slider.valueChanged.connect(self._changed)
+        self._changed(self.slider.value())
 
-    def set_value(self, value: str, warning: bool = False):
-        if self.value.text() != value:
-            self.value.setText(value)
-        colour = "#ffd273" if warning else "#eafff1"
-        if self.value.property("metricColour") != colour:
-            self.value.setProperty("metricColour", colour)
-            self.value.setStyleSheet(f"color:{colour}")
+    def value(self):
+        v = self.low + self.slider.value() * self.step
+        return round(v, 1) if self.step < 1 else int(round(v))
+
+    def setValue(self, value):
+        self.slider.setValue(round((float(value) - self.low) / self.step))
+        self._update_readout()
+
+    def _update_readout(self):
+        v = self.value()
+        num = f"{v:.1f}" if self.step < 1 else str(v)
+        self.readout.setText(f"{num} {self.unit}".rstrip())
+
+    def _changed(self, _):
+        self._update_readout()
+        self.valueChanged.emit(float(self.value()))
 
 
 class SMeterWidget(QWidget):
@@ -257,7 +376,7 @@ class SMeterWidget(QWidget):
         r = self.rect()
         p.fillRect(r, QColor(8, 12, 10))
         bar = r.adjusted(4, 14, -196, -4)
-        p.setPen(QPen(QColor(60, 90, 70), 1))
+        p.setPen(QPen(theme_color(QColor(60, 90, 70)), 1))
         p.drawRect(bar)
         lo, hi = (self.LO, self.HI) if self.cal else (-110.0, -20.0)
         if self.value is not None:
@@ -286,7 +405,57 @@ class SMeterWidget(QWidget):
         p.end()
 
 
+class WeatherHeader(QFrame):
+    """Station weather across the full header, underneath its menu and labels."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAccessibleName("Current station weather background")
+        self._art = QPixmap()
+        self._crop_top = 0.5
+
+    def clear_condition(self):
+        self._art = QPixmap()
+        self.setToolTip("")
+        self.update()
+
+    def show_condition(self, image_name: str) -> bool:
+        path = os.path.join(os.path.dirname(__file__), "..", "assets", "weather", image_name + ".png")
+        art = QPixmap(path)
+        if art.isNull():
+            return False
+        self._art = art
+        self._crop_top = weather.CROP_TOP[image_name]
+        self.update()
+        return True
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.fillRect(self.rect(), theme_color(QColor("#0c1e18")))
+        if not self._art.isNull():
+            self._paint_condition(p)
+        p.setPen(QPen(theme_color(QColor("#2e9e61")), 2))
+        p.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
+        p.end()
+
+    def _paint_condition(self, p):
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        box = QRectF(self.rect())
+        source_height = min(self._art.height(), self._art.width() * box.height() / box.width())
+        source_width = source_height * box.width() / box.height()
+        left = (self._art.width() - source_width) / 2
+        # Keep the horizon or moon visible as a wide window needs a shallower crop.
+        top = min(self._art.height() - source_height,
+                  self._art.height() * self._crop_top + min(180, self._art.height() - source_height) - source_height)
+        p.drawPixmap(box, self._art, QRectF(left, max(0, top), source_width, source_height))
+        shade = QLinearGradient(0, 0, self.width(), 0)
+        for position, opacity in ((0.0, 215), (0.27, 165), (0.48, 75), (0.72, 155), (1.0, 220)):
+            shade.setColorAt(position, QColor(4, 19, 15, opacity))
+        p.fillRect(box, QBrush(shade))
+
 class ImageView(QGraphicsView):
+    imageDropped = Signal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setScene(QGraphicsScene(self))
@@ -297,8 +466,15 @@ class ImageView(QGraphicsView):
         self.setBackgroundBrush(QColor(5, 13, 13))
         self.auto_fit = True
         self.fit_mode = "width"
+        self.follow_live = True
+        self.live_edge = None
+        self._fit_source_width = None
+        self._fit_viewport_width = None
+        self.verticalScrollBar().sliderPressed.connect(self._pause_live_follow)
         self.empty_title = "AWAITING IMAGE DOWNLINK"
         self.empty_hint = "START A PASS OR OPEN A .CADU FILE"
+        artwork = os.path.join(os.path.dirname(__file__), "..", "assets", "meteor-placeholder.png")
+        self.empty_artwork = QPixmap(artwork)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
 
     def paintEvent(self, event):
@@ -308,55 +484,106 @@ class ImageView(QGraphicsView):
         p = QPainter(self.viewport())
         r = self.viewport().rect()
         p.fillRect(r, QColor(5, 17, 13))
-        p.setPen(QPen(QColor(17, 48, 32), 1))
+        p.setPen(QPen(theme_color(QColor(17, 48, 32)), 1))
         for x in range(0, r.width(), 48):
             p.drawLine(x, 0, x, r.height())
         for y in range(0, r.height(), 48):
             p.drawLine(0, y, r.width(), y)
+        if not self.empty_artwork.isNull():
+            p.setRenderHint(QPainter.SmoothPixmapTransform)
+            limit = QSize(max(1, min(420, int(r.width() * 0.55))),
+                          max(1, min(250, int(r.height() * 0.45))))
+            size = self.empty_artwork.size().scaled(limit, Qt.KeepAspectRatio)
+            top = max(8, (r.height() - size.height()) / 2 - 52)
+            target = QRectF((r.width() - size.width()) / 2, top,
+                            size.width(), size.height())
+            p.drawPixmap(target, self.empty_artwork, QRectF(self.empty_artwork.rect()))
+            p.setFont(QFont("Segoe UI", 13, QFont.Bold))
+            p.setPen(ACCENT)
+            p.drawText(QRectF(0, top + size.height() + 19, r.width(), 28),
+                       Qt.AlignCenter, self.empty_title)
+            p.setFont(QFont("Consolas", 9))
+            p.setPen(theme_color(QColor(111, 166, 128)))
+            p.drawText(QRectF(0, top + size.height() + 50, r.width(), 22),
+                       Qt.AlignCenter, self.empty_hint)
+            p.end()
+            return
         cx, cy = r.center().x(), r.center().y() - 18
-        p.setPen(QPen(QColor(38, 104, 66), 1))
+        p.setPen(QPen(theme_color(QColor(38, 104, 66)), 1))
         p.drawEllipse(cx - 120, cy - 120, 240, 240)
         p.drawEllipse(cx - 74, cy - 74, 148, 148)
         p.drawLine(cx - 150, cy, cx + 150, cy)
         p.drawLine(cx, cy - 150, cx, cy + 150)
-        p.setPen(QPen(QColor(76, 255, 154), 2))
+        p.setPen(QPen(ACCENT, 2))
         p.drawEllipse(cx - 8, cy - 8, 16, 16)
         p.setFont(QFont("Segoe UI", 13, QFont.Bold))
         p.drawText(QRectF(0, cy + 134, r.width(), 26), Qt.AlignCenter, self.empty_title)
-        p.setPen(QColor(111, 166, 128))
+        p.setPen(theme_color(QColor(111, 166, 128)))
         p.setFont(QFont("Consolas", 9))
         p.drawText(QRectF(0, cy + 166, r.width(), 23), Qt.AlignCenter, self.empty_hint)
         p.end()
 
-    def show_array(self, img: np.ndarray):
+    def show_array(self, img: np.ndarray, *, follow_edge: str | None = None):
         img = np.ascontiguousarray(img)
         h, w = img.shape[:2]
         if img.ndim == 2:
             q = QImage(img.data, w, h, w, QImage.Format_Grayscale8)
         else:
             q = QImage(img.data, w, h, 3 * w, QImage.Format_RGB888)
-        self.show_pixmap(QPixmap.fromImage(q.copy()))
+        self.show_pixmap(QPixmap.fromImage(q.copy()), follow_edge=follow_edge)
 
-    def show_pixmap(self, pixmap: QPixmap):
+    def show_pixmap(self, pixmap: QPixmap, *, follow_edge: str | None = None):
+        self.live_edge = follow_edge
         self.item.setPixmap(pixmap)
         self.scene().setSceneRect(QRectF(pixmap.rect()))
         if self.auto_fit:
-            self.fit_image() if self.fit_mode == "image" else self.fit_width()
+            if self.fit_mode == "image":
+                self.fit_image()
+            elif (self._fit_source_width != pixmap.width() or
+                  self._fit_viewport_width != self.viewport().width()):
+                self.fit_width(resume_live=False)
+        if follow_edge and self.follow_live:
+            QTimer.singleShot(0, self._scroll_to_live_edge)
+
+    def begin_live_follow(self):
+        self.follow_live = True
+        self.auto_fit = True
+        self.fit_mode = "width"
+        self._fit_source_width = None
+
+    def _pause_live_follow(self):
+        if self.live_edge:
+            self.follow_live = False
+
+    def _scroll_to_live_edge(self):
+        if self.live_edge and self.follow_live:
+            bar = self.verticalScrollBar()
+            bar.setValue(bar.minimum() if self.live_edge == "top" else bar.maximum())
 
     def clear_image(self):
+        self.live_edge = None
+        self.follow_live = True
+        self._fit_source_width = None
         self.item.setPixmap(QPixmap())
         self.scene().setSceneRect(QRectF())
         self.viewport().update()
 
-    def fit_width(self):
+    def fit_width(self, *, resume_live: bool = True):
         r = self.scene().sceneRect()
         if r.width() <= 0:
             return
         self.resetTransform()
-        s = (self.viewport().width() - 4) / r.width()
+        # Leave room for the vertical scrollbar once the growing strip exceeds the pane height.
+        available = self.viewport().width() - self.verticalScrollBar().sizeHint().width() - 4
+        s = max(1, available) / r.width()
         self.scale(s, s)
         self.auto_fit = True
         self.fit_mode = "width"
+        self._fit_source_width = int(r.width())
+        self._fit_viewport_width = self.viewport().width()
+        if resume_live and self.live_edge:
+            self.follow_live = True
+            QTimer.singleShot(0, self._scroll_to_live_edge)
 
     def fit_image(self):
         r = self.scene().sceneRect()
@@ -372,14 +599,65 @@ class ImageView(QGraphicsView):
         self.auto_fit = False
 
     def wheelEvent(self, e):
+        self._pause_live_follow()
         f = 1.25 if e.angleDelta().y() > 0 else 0.8
         self.scale(f, f)
         self.auto_fit = False
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._pause_live_follow()
+        super().mousePressEvent(event)
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if self.auto_fit:
-            self.fit_image() if self.fit_mode == "image" else self.fit_width()
+            self.fit_image() if self.fit_mode == "image" else self.fit_width(resume_live=False)
+        if self.live_edge and self.follow_live:
+            QTimer.singleShot(0, self._scroll_to_live_edge)
+
+    @staticmethod
+    def _dropped_image_path(event) -> str | None:
+        for url in event.mimeData().urls():
+            if url.isLocalFile():
+                path = url.toLocalFile()
+                if os.path.splitext(path)[1].lower() in (".png", ".jpg", ".jpeg", ".bmp",
+                                                       ".webp", ".tif", ".tiff"):
+                    return path
+        return None
+
+    def dragEnterEvent(self, event):
+        if self._dropped_image_path(event):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if self._dropped_image_path(event):
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        path = self._dropped_image_path(event)
+        if path:
+            self.imageDropped.emit(path)
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
+
+
+def read_saved_image(path: str) -> np.ndarray:
+    """Decode a saved picture to the RGB array used by the received-image pane."""
+    reader = QImageReader(path)
+    reader.setAutoTransform(True)
+    image = reader.read()
+    if image.isNull():
+        raise ValueError(reader.errorString() or "Could not read image")
+    image = image.convertToFormat(QImage.Format_RGB888)
+    h, w, stride = image.height(), image.width(), image.bytesPerLine()
+    pixels = np.frombuffer(image.constBits(), dtype=np.uint8, count=h * stride)
+    return pixels.reshape(h, stride)[:, :w * 3].reshape(h, w, 3).copy()
 
 
 class FullImageDialog(QDialog):
@@ -395,6 +673,7 @@ class FullImageDialog(QDialog):
         self.caption = QLabel()
         bar.addWidget(self.caption)
         bar.addStretch(1)
+        self.toolbar = bar
         fit = QPushButton(labels["full_fit"])
         fit.clicked.connect(lambda: self.view.fit_image())
         bar.addWidget(fit)
@@ -414,6 +693,236 @@ class FullImageDialog(QDialog):
         self.view.show_pixmap(pixmap)
 
 
+class CompositeDialog(FullImageDialog):
+    """Preview and save optional enhancements of an already mapped daily composite."""
+
+    def __init__(self, parent, labels):
+        super().__init__(parent, labels)
+        self.setWindowTitle("METEOR-X - " + labels["composite"])
+        self.labels = labels
+        self.source_path = None
+        self.source_image = None
+        self.channel_image = None
+        self.source_channels = (1, 2, 4)
+        self.bounds = None
+        self.min_city_population = 200_000
+        self.default_city_scale = parent.cfg.map_text_scale if parent is not None else 1.3
+        self.displayed = None
+        self.options = {"colour": False, "infrared": False, "coast": False,
+                        "cities": True, "mirror": False,
+                        "coast_colour": overlay.DEFAULT_COAST,
+                        "city_colour": overlay.DEFAULT_CITY,
+                        "city_scale": self.default_city_scale}
+        self.enhancement_dialog = None
+        self.render_timer = QTimer(self)
+        self.render_timer.setSingleShot(True)
+        self.render_timer.timeout.connect(self._render)
+        self.view_selector = QComboBox()
+        self.view_selector.setMinimumContentsLength(16)
+        self.view_selector.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.view_selector.view().setMinimumWidth(260)
+        self.view_selector.addItem("RGB 124")
+        self.view_selector.currentIndexChanged.connect(self._view_changed)
+        self.toolbar.insertWidget(2, QLabel(labels["view"]))
+        self.toolbar.insertWidget(3, self.view_selector)
+        enhance_button = QPushButton(labels["enhance"])
+        enhance_button.clicked.connect(self._open_enhancements)
+        self.toolbar.insertWidget(4, enhance_button)
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        save_button = QPushButton(labels["composite_save"])
+        save_button.clicked.connect(self._save)
+        bottom.addWidget(save_button)
+        self.layout().addLayout(bottom)
+
+    def load_composite(self, path: str):
+        meta_path = os.path.splitext(path)[0] + ".json"
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            meta = {}
+        base_name = meta.get("base_image")
+        bounds = meta.get("bounds")
+        usable_base = (isinstance(base_name, str) and isinstance(bounds, list) and len(bounds) == 9 and
+                       os.path.isfile(os.path.join(os.path.dirname(path), base_name)))
+        source = os.path.join(os.path.dirname(path), base_name) if usable_base else path
+        image = imaging.read_png(source)
+        if image.ndim != 3 or image.shape[2] != 3:
+            raise ValueError("Composite image is not RGB")
+        self.source_path = path
+        self.source_image = image
+        channel_name = meta.get("channel_image")
+        channel_path = (os.path.join(os.path.dirname(path), channel_name)
+                        if isinstance(channel_name, str) else None)
+        self.channel_image = (imaging.read_png(channel_path) if channel_path and
+                              os.path.isfile(channel_path) else None)
+        if self.channel_image is not None and self.channel_image.shape != image.shape:
+            self.channel_image = None
+        fallback_channels = ([4] if path.lower().endswith("_night_ir.png") else
+                             [1, 2, 3] if path.lower().endswith("_rgb123.png") else [1, 2, 4])
+        received = meta.get("channels", fallback_channels)
+        self.source_channels = (tuple(received) if received in ([1, 2, 3], [1, 2, 4], [4])
+                                else (1, 2, 4))
+        self.bounds = tuple(bounds) if usable_base else None
+        from . import mosaic
+        self.view_selector.blockSignals(True)
+        self.view_selector.clear()
+        available = mosaic.composite_views(
+            self.source_channels, self.channel_image is not None, self.bounds is not None)
+        self.view_selector.addItems(mosaic.ALL_COMPOSITE_VIEWS)
+        for index, name in enumerate(mosaic.ALL_COMPOSITE_VIEWS):
+            if name not in available:
+                item = self.view_selector.model().item(index)
+                item.setEnabled(False)
+                item.setToolTip("Unavailable in this composite; its mapped source channels or location data are missing")
+        preferred = ("Night IR" if self.source_channels == (4,) else
+                     "MSU-MR 124 False Color" if self.source_channels == (1, 2, 4)
+                     else "AVHRR 3a21 False Color")
+        preferred_index = self.view_selector.findText(preferred)
+        self.view_selector.setCurrentIndex(preferred_index if preferred in available else
+                                           self.view_selector.findText(available[0]))
+        self.view_selector.blockSignals(False)
+        self.min_city_population = int(meta.get("city_min_population", 200_000))
+        self.caption.setText(os.path.basename(path))
+        self.options.update({"colour": False, "infrared": False, "coast": False,
+                             "cities": self.bounds is not None, "mirror": False,
+                             "coast_colour": overlay.DEFAULT_COAST,
+                             "city_colour": overlay.DEFAULT_CITY,
+                             "city_scale": self.default_city_scale})
+        if self.enhancement_dialog is not None:
+            self.enhancement_dialog.close()
+            self.enhancement_dialog = None
+        self._render()
+
+    def _set_option(self, key, value):
+        self.options[key] = value
+        self.render_timer.start(100)
+
+    def _view_changed(self, _=None):
+        uses_ir = self.view_selector.currentText() not in (
+            "RGB 221", "AVHRR 221 False Color", "RGB 123", "RGB 123 (raw)",
+            "AVHRR 3a21 False Color", "MSA", "Night IR",
+            "Channel 1", "Channel 2", "Channel 3")
+        if self.enhancement_dialog is not None and self.enhancement_dialog.isVisible():
+            self.ir_checkbox.setEnabled(uses_ir)
+            if not uses_ir:
+                self.ir_checkbox.setChecked(False)
+        elif not uses_ir:
+            self.options["infrared"] = False
+        self.render_timer.start(100)
+
+    def _render(self):
+        if self.source_image is None:
+            return
+        from . import mosaic
+        selected = self.view_selector.currentText()
+        source = mosaic.composite_view(self.source_image, self.channel_image, selected,
+                                       self.source_channels, self.bounds)
+        if self.bounds is not None:
+            image = mosaic.render_composite(
+                source, self.bounds, self.min_city_population,
+                colour_enhancement=self.options["colour"],
+                infrared_enhancement=self.options["infrared"],
+                infrared_grey=selected in ("Channel 4", "3.9 µm Shortwave IR (Uncalibrated)"),
+                coastlines=self.options["coast"], cities=self.options["cities"],
+                coast_colour=self.options["coast_colour"],
+                city_colour=self.options["city_colour"],
+                city_scale=self.options["city_scale"], mirror=self.options["mirror"])
+        else:
+            image = source
+            if self.options["colour"]:
+                image = enhance.colour(image)
+            if self.options["infrared"]:
+                image[:, :, 2] = enhance.infrared(image[:, :, 2])
+            if self.options["mirror"]:
+                image = image[:, ::-1].copy()
+        self.displayed = np.ascontiguousarray(image)
+        self.view.show_array(self.displayed)
+
+    def _open_enhancements(self):
+        if self.enhancement_dialog is not None and self.enhancement_dialog.isVisible():
+            self.enhancement_dialog.raise_()
+            return
+        t = self.labels
+        dialog = QDialog(self)
+        dialog.setWindowTitle("METEOR-X - " + t["enh_title"])
+        layout = QVBoxLayout(dialog)
+        for key, label in (("colour", t["enh_colour"]), ("infrared", t["enh_ir"]),
+                           ("coast", t["enh_coast"]), ("cities", t["enh_cities"]),
+                           ("mirror", t["mirror"])):
+            check = QCheckBox(label)
+            check.setChecked(self.options[key])
+            if key == "infrared":
+                self.ir_checkbox = check
+                check.setEnabled(self.view_selector.currentText() not in (
+                    "RGB 221", "AVHRR 221 False Color", "RGB 123", "RGB 123 (raw)",
+                    "AVHRR 3a21 False Color", "MSA", "Night IR",
+                    "Channel 1", "Channel 2", "Channel 3"))
+            if self.bounds is None and key in ("coast", "cities"):
+                check.setEnabled(False)
+            check.toggled.connect(lambda on, k=key: self._set_option(k, bool(on)))
+            layout.addWidget(check)
+        for key, label in (("coast_colour", t["enh_coast_col"]),
+                           ("city_colour", t["enh_city_col"])):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label))
+            choices = QComboBox()
+            for name, rgb in overlay.PALETTE.items():
+                choices.addItem(t.get(f"col_{name}", name.title()), name)
+                choices.setItemData(choices.count() - 1, QColor(*rgb), Qt.DecorationRole)
+            choices.setCurrentIndex(max(0, choices.findData(self.options[key])))
+            choices.setEnabled(self.bounds is not None)
+            choices.currentIndexChanged.connect(
+                lambda _, widget=choices, k=key: self._set_option(k, widget.currentData()))
+            row.addWidget(choices, 1)
+            layout.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(t["composite_city_size"]))
+        size = QDoubleSpinBox()
+        size.setRange(0.8, 2.5)
+        size.setSingleStep(0.1)
+        size.setDecimals(1)
+        size.setValue(self.options["city_scale"])
+        size.setEnabled(self.bounds is not None)
+        size.valueChanged.connect(lambda value: self._set_option("city_scale", value))
+        row.addWidget(size)
+        layout.addLayout(row)
+        note = QLabel(t["composite_enh_note"])
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        credit = QLabel(t["enh_credit"])
+        credit.setWordWrap(True)
+        layout.addWidget(credit)
+        close = QPushButton(t["enh_close"])
+        close.clicked.connect(dialog.close)
+        layout.addWidget(close)
+        self.enhancement_dialog = dialog
+        dialog.show()
+
+    def _save(self):
+        if self.displayed is None or self.source_path is None:
+            return
+        stem, _ = os.path.splitext(self.source_path)
+        view_slug = re.sub(r"[^a-z0-9]+", "_", self.view_selector.currentText().lower()).strip("_")
+        suggested = outputs.unique_path(f"{stem}_{view_slug}_enhanced.png")
+        path, _ = QFileDialog.getSaveFileName(
+            self, self.labels["composite_save"], suggested, "PNG (*.png)")
+        if not path:
+            return
+        if not path.lower().endswith(".png"):
+            path += ".png"
+        # Edits are separate exports. In particular, never replace the source
+        # mosaic (which an automatic rebuild may also be writing).
+        path = outputs.unique_path(path)
+        try:
+            imaging.write_png(path, self.displayed)
+        except OSError as exc:
+            QMessageBox.warning(self, "METEOR-X", f"{path}\n{exc}")
+            return
+        self.caption.setText(f"{os.path.basename(self.source_path)}  ·  {self.labels['composite_saved']}: {path}")
+
+
 # ----------------------------------------------------------------------------
 # Main window
 # ----------------------------------------------------------------------------
@@ -428,14 +937,23 @@ class MainWindow(QMainWindow):
         self.logq: queue.Queue = queue.Queue()
         self.engine = Engine(cfg, log_cb=self.logq.put)
         self._cleared_imager = None
+        self._opened_image_path = None
+        self._live_view_imager = None
         self._preview_rev = -1
         self._auto_enhanced_key = None
         self._last_view_update = 0
-        self._render_revision = 0
-        self._render_request = None
-        self._render_thread = None
-        self._render_results = queue.Queue()
         self._build()
+        self._weather_manager = QNetworkAccessManager(self)
+        self._weather_request = None
+        self._weather_last_ok = 0.0
+        self._weather_failures = 0
+        self._weather_timer = QTimer(self)
+        self._weather_timer.timeout.connect(self._refresh_weather)
+        self._weather_timer.start(weather.REFRESH_MS)
+        self._weather_retry = QTimer(self)
+        self._weather_retry.setSingleShot(True)
+        self._weather_retry.timeout.connect(self._refresh_weather)
+        QTimer.singleShot(0, self._refresh_weather)
         self._connected: set = set()
         self._profiles_detect(startup=True)
         QShortcut(QKeySequence(Qt.Key_F11), self, self._toggle_fullscreen)
@@ -469,6 +987,14 @@ class MainWindow(QMainWindow):
                 st = json.load(f)
         except (OSError, ValueError):
             pass
+        try:
+            floor = int(st.get("spectrum_floor_db", 0))
+        except (TypeError, ValueError):
+            floor = 0
+        self.sl_spec_floor.blockSignals(True)
+        self.sl_spec_floor.setValue(floor)
+        self.sl_spec_floor.blockSignals(False)
+        self._spectrum_floor_changed(self.sl_spec_floor.value(), save=False)
         self.chk_mirror.setChecked(bool(st.get("mirror", False)))
         if isinstance(st.get("enh"), dict):
             for k, v in st["enh"].items():
@@ -508,13 +1034,20 @@ class MainWindow(QMainWindow):
                   "rsplitter": bytes(self.rsplit.saveState().toHex()).decode(),
                   "view_splitter": bytes(self.view_split.saveState().toHex()).decode(),
                   "maximized": self.isMaximized(), "fullscreen": self.isFullScreen(),
-                  "mirror": self.chk_mirror.isChecked(), "enh": self.enh}
+                  "mirror": self.chk_mirror.isChecked(), "enh": self.enh,
+                  "spectrum_floor_db": self.sl_spec_floor.value()}
             tmp = self._state_path() + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(st, f)
             os.replace(tmp, self._state_path())
         except OSError:
             pass
+
+    def _spectrum_floor_changed(self, value: int, save: bool = True):
+        self.spec.set_floor_offset(value)
+        self.spec_floor_value.setText(f"{value:+d} dB" if value else "0 dB")
+        if save:
+            self._save_window_state()
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():
@@ -526,6 +1059,50 @@ class MainWindow(QMainWindow):
         if self.isFullScreen():
             self.showMaximized()
 
+    def _refresh_weather(self):
+        if self._weather_request is not None:
+            return
+        self._weather_retry.stop()
+        try:
+            url = weather.request_url(self.cfg.getf("station", "latitude", float("nan")),
+                                      self.cfg.getf("station", "longitude", float("nan")))
+        except ValueError as exc:
+            self.weather_header.clear_condition()
+            self.engine.log(f"Weather image: {exc}")
+            return
+        request = QNetworkRequest(QUrl(url))
+        request.setTransferTimeout(12_000)
+        request.setRawHeader(b"User-Agent", b"METEOR-X/2.0")
+        reply = self._weather_manager.get(request)
+        self._weather_request = reply
+        reply.finished.connect(lambda r=reply: self._weather_finished(r))
+
+    def _weather_finished(self, reply):
+        if reply is not self._weather_request:
+            reply.deleteLater()
+            return
+        self._weather_request = None
+        try:
+            if reply.error() != QNetworkReply.NetworkError.NoError:
+                raise ValueError(reply.errorString())
+            conditions = weather.parse_current(json.loads(bytes(reply.readAll())))
+            if not self.weather_header.show_condition(conditions.image):
+                raise ValueError(f"Missing weather image: {conditions.image}")
+            self.weather_header.setToolTip(
+                f"Station weather at {conditions.valid_time or 'current time'} · "
+                "Weather data by Open-Meteo.com")
+            self._weather_last_ok = time.monotonic()
+            self._weather_failures = 0
+        except (ValueError, TypeError, KeyError) as exc:
+            self._weather_failures += 1
+            self.engine.log(f"Weather image unavailable: {exc}")
+            if self._weather_last_ok and time.monotonic() - self._weather_last_ok > 3600:
+                self.weather_header.clear_condition()
+            delay = min(weather.REFRESH_MS, 60_000 * 2 ** min(self._weather_failures - 1, 4))
+            self._weather_retry.start(delay)
+        finally:
+            reply.deleteLater()
+
     # -- construction -----------------------------------------------------------
     def _build(self):
         t = self.t
@@ -535,9 +1112,17 @@ class MainWindow(QMainWindow):
         shell_layout.setSpacing(0)
         self.setCentralWidget(shell)
 
-        header = QFrame()
+        header = WeatherHeader()
         header.setObjectName("brandHeader")
-        hh = QHBoxLayout(header)
+        self.weather_header = header
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(0)
+        self.header_menu = QMenuBar(header)
+        header_layout.addWidget(self.header_menu)
+        brand_row = QWidget(header)
+        brand_row.setMinimumHeight(92)
+        hh = QHBoxLayout(brand_row)
         hh.setContentsMargins(18, 8, 18, 8)
         hh.setSpacing(14)
         mark = QLabel()
@@ -556,18 +1141,28 @@ class MainWindow(QMainWindow):
         mission.setObjectName("brandMission")
         name_col.addWidget(mission)
         hh.addLayout(name_col)
-        version = QLabel(f"V {__version__}  /  BUILD {__build__}")
-        version.setObjectName("buildBadge")
-        hh.addWidget(version)
         hh.addStretch(1)
+        station_col = QVBoxLayout()
+        station_col.setContentsMargins(0, 0, 0, 0)
+        station_col.setSpacing(4)
+        station_col.addStretch(1)
         station = QLabel((self.cfg.get("station", "callsign", "") or "GROUND STATION").upper())
         station.setObjectName("stationBadge")
-        hh.addWidget(station)
+        station.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        station_col.addWidget(station, 0, Qt.AlignRight)
+        version = QLabel(f"V {__version__}  /  BUILD {__build__}")
+        version.setObjectName("buildBadge")
+        version.setAlignment(Qt.AlignCenter)
+        version.setFixedHeight(25)
+        station_col.addWidget(version, 0, Qt.AlignRight)
+        station_col.addStretch(1)
+        hh.addLayout(station_col)
         self.header_state = QLabel("STANDBY")
         self.header_state.setObjectName("headerState")
         self.header_state.setAlignment(Qt.AlignCenter)
         self.header_state.setMinimumWidth(120)
         hh.addWidget(self.header_state)
+        header_layout.addWidget(brand_row)
         shell_layout.addWidget(header)
 
         split = QSplitter(Qt.Horizontal, self)
@@ -596,6 +1191,7 @@ class MainWindow(QMainWindow):
         mn.addAction(t["rename"], self._profile_rename)
         mn.addAction(t["delete"], self._profile_delete)
         pm.setMenu(mn)
+        self.profile_menu_button = pm
         ph.addWidget(self.prof_cb, 1)
         ph.addWidget(self.btn_detect)
         ph.addWidget(pm)
@@ -607,25 +1203,21 @@ class MainWindow(QMainWindow):
         self.prof_lbl.setStyleSheet("color:#9fb3a8;font-size:11px")
         fl.addRow(self.prof_lbl)
         self.dev = QComboBox()
-        self.dev.addItems(t["devices"])
+        for key, label in zip(DEV_KEYS, t["devices"]):
+            self.dev.addItem(label, key)
         cur = (self.cfg.get("sdr", "device", "rtlsdr") or "rtlsdr").lower()
-        self.dev.setCurrentIndex(DEV_KEYS.index(cur) if cur in DEV_KEYS else 0)
+        self.dev.setCurrentIndex(max(self.dev.findData(cur), 0))
         fl.addRow(t["device"], self.dev)
-        self.rtl_gain = QDoubleSpinBox()
-        self.rtl_gain.setRange(0, 50)
-        self.rtl_gain.setDecimals(1)
-        self.rtl_gain.setSingleStep(1)
+        self.rtl_gain = GainSlider(0, 50, 0.1)
         try:
             self.rtl_gain.setValue(float(self.cfg.get("sdr", "rtl_gain_db", "38.6")))
         except ValueError:
             self.rtl_gain.setValue(38.6)
         self.lbl_rtl_gain = QLabel(t["gain"])
         fl.addRow(self.lbl_rtl_gain, self.rtl_gain)
-        self.sp_grdb = QSpinBox()
-        self.sp_grdb.setRange(20, 59)
+        self.sp_grdb = GainSlider(20, 59)
         self.sp_grdb.setValue(self.cfg.geti("sdr", "sdrplay_grdb", 40))
-        self.sp_lna = QSpinBox()
-        self.sp_lna.setRange(0, 9)
+        self.sp_lna = GainSlider(0, 9, unit="")
         self.sp_lna.setValue(self.cfg.geti("sdr", "sdrplay_lna_state", 3))
         self.lbl_grdb, self.lbl_lna = QLabel(t["grdb"]), QLabel(t["lna"])
         fl.addRow(self.lbl_grdb, self.sp_grdb)
@@ -635,11 +1227,7 @@ class MainWindow(QMainWindow):
         self.cb_ant.setCurrentText((self.cfg.get("sdr", "sdrplay_antenna", "A") or "A").upper()[:1])
         self.lbl_ant = QLabel(t["ant"])
         fl.addRow(self.lbl_ant, self.cb_ant)
-        self.sp_hlna, self.sp_hvga = QSpinBox(), QSpinBox()
-        self.sp_hlna.setRange(0, 40)
-        self.sp_hlna.setSingleStep(8)
-        self.sp_hvga.setRange(0, 62)
-        self.sp_hvga.setSingleStep(2)
+        self.sp_hlna, self.sp_hvga = GainSlider(0, 40, 8), GainSlider(0, 62, 2)
         self.sp_hlna.setValue(self.cfg.geti("sdr", "hackrf_lna_gain", 24))
         self.sp_hvga.setValue(self.cfg.geti("sdr", "hackrf_vga_gain", 30))
         self.lbl_hlna, self.lbl_hvga = QLabel(t["hlna"]), QLabel(t["hvga"])
@@ -648,8 +1236,7 @@ class MainWindow(QMainWindow):
         self.chk_hamp = QCheckBox(t["hamp"])
         self.chk_hamp.setChecked(self.cfg.getb("sdr", "hackrf_amp", False))
         fl.addRow("", self.chk_hamp)
-        self.sp_lgain = QSpinBox()
-        self.sp_lgain.setRange(0, 73)
+        self.sp_lgain = GainSlider(0, 73)
         self.sp_lgain.setValue(self.cfg.geti("sdr", "lime_gain_db", 40))
         self.lbl_lgain = QLabel(t["lgain"])
         fl.addRow(self.lbl_lgain, self.sp_lgain)
@@ -661,8 +1248,7 @@ class MainWindow(QMainWindow):
         self.ed_puri = QLineEdit(self.cfg.get("sdr", "pluto_uri", "ip:192.168.2.1") or "ip:192.168.2.1")
         self.lbl_puri = QLabel(t["puri"])
         fl.addRow(self.lbl_puri, self.ed_puri)
-        self.sp_pgain = QSpinBox()
-        self.sp_pgain.setRange(0, 71)
+        self.sp_pgain = GainSlider(0, 71)
         try:
             self.sp_pgain.setValue(int(float(self.cfg.get("sdr", "pluto_gain_db", "50"))))
         except ValueError:
@@ -670,28 +1256,27 @@ class MainWindow(QMainWindow):
         self.lbl_pgain = QLabel(t["pgain"])
         fl.addRow(self.lbl_pgain, self.sp_pgain)
         self.bias = QCheckBox(t["bias"])
-        self.bias.toggled.connect(self._bias_toggled)
         fl.addRow("", self.bias)
+        self.dc_remove = QCheckBox(t["dc_remove"])
+        self.dc_remove.setChecked(self.cfg.getb("decoder", "dc_spike_removal", False))
+        self.dc_remove.setToolTip(t["dc_remove_tip"])
+        self.dc_remove.toggled.connect(self._dc_remove_toggled)
+        fl.addRow("", self.dc_remove)
         self.chk_preamp = QCheckBox("")
         self.chk_preamp.setVisible(False)
         self.chk_preamp.toggled.connect(self._preamp_toggled)
         fl.addRow(self.chk_preamp)
-        fh = QHBoxLayout()
-        self.file_edit = QLineEdit(self.cfg.get("sdr", "file_path", "") or "")
-        bb = QToolButton()
-        bb.setText(t["browse"])
-        bb.clicked.connect(self._browse)
-        fh.addWidget(self.file_edit)
-        fh.addWidget(bb)
-        self.lbl_file = QLabel(t["file"])
-        self.file_row = QWidget()
-        self.file_row.setLayout(fh)
-        fh.setContentsMargins(0, 0, 0, 0)
-        fl.addRow(self.lbl_file, self.file_row)
         self.dev.currentIndexChanged.connect(self._dev_changed)
         self.dev.activated.connect(self._dev_picked)
+        self._gain_timer = QTimer(self)
+        self._gain_timer.setSingleShot(True)
+        self._gain_timer.timeout.connect(self._apply_live_gain)
+        self._gain_save_timer = QTimer(self)
+        self._gain_save_timer.setSingleShot(True)
+        self._gain_save_timer.timeout.connect(self._save_gain_settings)
         for w in (self.rtl_gain, self.sp_grdb, self.sp_lna, self.sp_hlna, self.sp_hvga, self.sp_lgain, self.sp_pgain):
-            w.valueChanged.connect(lambda *_: self._profile_status())
+            w.valueChanged.connect(self._gain_changed)
+            w.slider.sliderReleased.connect(self._apply_live_gain)
         self.prof_cb.activated.connect(self._profile_picked)
         lv.addWidget(g)
 
@@ -725,9 +1310,6 @@ class MainWindow(QMainWindow):
         self.state_lbl = QLabel("")
         self.state_lbl.setStyleSheet("font-size:14px;font-weight:700;padding:4px")
         gl.addWidget(self.state_lbl, 3, 0, 1, 3)
-        self.prog = QProgressBar()
-        self.prog.setVisible(False)
-        gl.addWidget(self.prog, 4, 0, 1, 3)
         lv.addWidget(g)
 
         # --- signal validation
@@ -755,33 +1337,12 @@ class MainWindow(QMainWindow):
         ah.addWidget(QLabel(t["volume"]))
         ah.addWidget(self.sl_vol, 1)
         sv.addLayout(ah)
-        # Keep the quick readings visible first; the original live scopes remain one tab away.
-        self.signal_tabs = QTabWidget()
-        self.signal_tabs.setObjectName("signalTabs")
-        overview = QWidget()
-        metrics = QGridLayout(overview)
-        metrics.setContentsMargins(4, 8, 4, 4)
-        metrics.setHorizontalSpacing(5)
-        metrics.setVerticalSpacing(5)
-        captions = (("snr", t["snr"]), ("ber", t["ber"]),
-                    ("frames", t["frames"]), ("packets", t["packets"]),
-                    ("stream", t["stream"]), ("elev", t["elev"]),
-                    ("freq", t["freq"]), ("dopp", t["dopp"]),
-                    ("loop", t["loop"]), ("mode", t["mode"]),
-                    ("rec", t["rec"]))
-        self.signal_cards = {}
-        for index, (key, caption) in enumerate(captions):
-            card = SignalCard(caption)
-            metrics.addWidget(card, index // 3, index % 3)
-            self.signal_cards[key] = card
-        metrics.setColumnStretch(0, 1)
-        metrics.setColumnStretch(1, 1)
-        metrics.setColumnStretch(2, 1)
-        self.signal_tabs.addTab(overview, t["signal_overview"])
-
         scopes = QWidget()
         scopes_layout = QVBoxLayout(scopes)
         scopes_layout.setContentsMargins(4, 8, 4, 4)
+        scope_header = QLabel(f"{t['signal_scopes'].upper()}   /   LIVE LRPT TELEMETRY")
+        scope_header.setObjectName("scopeHeader")
+        scopes_layout.addWidget(scope_header)
         row = QHBoxLayout()
         self.eye = EyeWidget()
         self.eye.title = t["eye"]
@@ -793,17 +1354,36 @@ class MainWindow(QMainWindow):
         self.const.setFixedWidth(130)
         row.addWidget(self.const)
         scopes_layout.addLayout(row, 1)
-        scopes_layout.addWidget(QLabel(t["spectrum"]))
+        spec_row = QHBoxLayout()
+        spec_row.setSpacing(2)
         self.spec = SpectrumWidget()
         self.spec.setMinimumHeight(100)
-        scopes_layout.addWidget(self.spec, 1)
-        self.signal_tabs.addTab(scopes, t["signal_scopes"])
-        sv.addWidget(self.signal_tabs, 1)
+        spec_row.addWidget(self.spec, 1)
+        floor_controls = QVBoxLayout()
+        floor_controls.setSpacing(0)
+        self.spec_floor_label = QLabel(t["spec_floor"])
+        self.spec_floor_label.setAlignment(Qt.AlignHCenter)
+        self.spec_floor_label.setStyleSheet(
+            f"font: 700 9px Consolas; color:{theme_color('#5ef7da').name()}")
+        floor_controls.addWidget(self.spec_floor_label)
+        self.sl_spec_floor = QSlider(Qt.Vertical)
+        self.sl_spec_floor.setRange(-25, 25)
+        self.sl_spec_floor.setValue(0)
+        self.sl_spec_floor.setToolTip(t["spec_floor_tip"])
+        floor_controls.addWidget(self.sl_spec_floor, 1, Qt.AlignHCenter)
+        self.spec_floor_value = QLabel("0 dB")
+        self.spec_floor_value.setAlignment(Qt.AlignHCenter)
+        self.spec_floor_value.setStyleSheet("font: 9px Consolas; color:#a9c8bc")
+        floor_controls.addWidget(self.spec_floor_value)
+        spec_row.addLayout(floor_controls)
+        self.sl_spec_floor.valueChanged.connect(self._spectrum_floor_changed)
+        scopes_layout.addLayout(spec_row, 1)
+        sv.addWidget(scopes, 1)
         lv.addWidget(g, 1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(left)
-        scroll.setMinimumWidth(420)
+        scroll.setMinimumWidth(500)
         scroll.setFrameShape(QFrame.NoFrame)
         split.addWidget(scroll)
 
@@ -832,22 +1412,28 @@ class MainWindow(QMainWindow):
         self.view_sel = QComboBox()
         self.view_sel.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.view_sel.setMinimumContentsLength(16)
-        self.view_sel.addItems(["RGB 221", "RGB 123"] + list(view_products.PRODUCTS) +
+        self.view_sel.addItems(["RGB 221", "RGB 123", "RGB 124"] + list(view_products.PRODUCTS) +
                                [f"{t['ch']} {i}" for i in range(1, 7)])
+        precip_index = self.view_sel.findText(view_products.PRECIPITATION)
+        self.view_sel.setItemData(precip_index,
+                                  "Qualitative infrared cloud proxy; colours do not measure rainfall.",
+                                  Qt.ToolTipRole)
         self.view_sel.view().setMinimumWidth(230)
         self.view_sel.currentIndexChanged.connect(lambda _: self._refresh_view(force=True))
         bar.addWidget(self.view_sel)
         self.enh = {"colour": False, "infrared": False, "fill": True,
+                    "texture_fill": self.cfg.getb("recording", "fill_texture", True),
                     "resize": False, "coast": False, "cities": False,
                     "coast_colour": overlay.DEFAULT_COAST, "city_colour": overlay.DEFAULT_CITY}
         self.enh_dlg = None
         self.full_image_dlg = None
+        self.mosaic_dlg = None
         self._track_cache = (None, None)    # (imager id, (track, scan angle)) - SGP4 once per pass
-        self._product_track_cache = {}      # one geolocation track per map-view source channel
+        self._product_track_cache = {}      # one geolocation track per MCIR/MSA source channel
         self._geo_warned = False
-        b = QPushButton(t["enhance"])
-        b.clicked.connect(self._open_enhance)
-        bar.addWidget(b)
+        self.btn_enhance = QPushButton(t["enhance"])
+        self.btn_enhance.clicked.connect(self._open_enhance)
+        bar.addWidget(self.btn_enhance)
         self.chk_mirror = QPushButton(t["mirror"])
         self.chk_mirror.setCheckable(True)
         self.chk_mirror.setToolTip(t["mirror_tip"])
@@ -859,14 +1445,26 @@ class MainWindow(QMainWindow):
         b = QPushButton(t["cadu"])
         b.clicked.connect(self._open_cadu)
         bar.addWidget(b)
-        b = QPushButton(t["open_folder"])
-        b.clicked.connect(self._open_folder)
+        b = QPushButton(t["open_image"])
+        b.clicked.connect(self._open_saved_image)
         bar.addWidget(b)
+        mosaics = QPushButton(t["composite"])
+        mosaic_menu = QMenu(mosaics)
+        mosaic_menu.addAction(t["mosaic_view"], self._view_latest_mosaic)
+        mosaic_menu.addAction(t["mosaic_view_night"],
+                              lambda checked=False: self._view_latest_mosaic("night"))
+        mosaic_menu.addAction(t["mosaic_open"], self._open_mosaics)
+        mosaic_menu.addAction(t["mosaic_rebuild"], self._rebuild_mosaic)
+        mosaics.setMenu(mosaic_menu)
+        bar.addWidget(mosaics)
         rv.addLayout(bar)
         self.view_split = QSplitter(Qt.Horizontal)
         self.view = ImageView()
         self.view.empty_title = t["view_empty_title"]
         self.view.empty_hint = t["view_empty_hint"]
+        self.view.setAcceptDrops(True)
+        self.view.viewport().setAcceptDrops(True)
+        self.view.imageDropped.connect(self._show_saved_image)
         self.view_split.addWidget(self.view)
         tracker_side = QWidget()
         tracker_side.setMinimumWidth(280)
@@ -922,21 +1520,19 @@ class MainWindow(QMainWindow):
         split.addWidget(self.rsplit)
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
-        split.setSizes([460, 980])
+        split.setSizes([510, 980])
 
         self.status = self.statusBar()
         self._dev_changed()
 
-        m = self.menuBar().addMenu("TLE")
+        m = self.header_menu.addMenu("TLE")
         act = QAction(t["reload_tle"], self)
         act.triggered.connect(lambda: self.engine.command("reload_tle"))
         m.addAction(act)
         act = QAction(t["import_tle"], self)
         act.triggered.connect(self._import_tle)
         m.addAction(act)
-        self.iq_menu = m.addMenu(t["iq_menu"])
-        self.iq_menu.aboutToShow.connect(self._refresh_iq_menu)
-        m = self.menuBar().addMenu(t["drivers"])
+        m = self.header_menu.addMenu(t["drivers"])
         act = QAction(t["drv_diag"], self)
         act.triggered.connect(self._driver_diag)
         m.addAction(act)
@@ -944,18 +1540,40 @@ class MainWindow(QMainWindow):
         act.triggered.connect(self._zadig)
         m.addAction(act)
         m.addSeparator()
-        mm = self.menuBar().addMenu(t["measures"])
+        mm = self.header_menu.addMenu(t["measures"])
         a2 = QAction(t["calib"], self)
         a2.triggered.connect(self._calibration)
         mm.addAction(a2)
+        colours = self.header_menu.addMenu(t["theme_menu"])
+        colours.addAction(t["theme_pick"], self._choose_interface_colour)
+        colours.addAction(t["theme_default"], lambda: self._set_interface_colour(DEFAULT_ACCENT))
         act = QAction(t["open_log"], self)
         act.triggered.connect(lambda: QDesktopServices.openUrl(
             QUrl.fromLocalFile(os.path.join(self.cfg.data_dir, "meteorrx.log"))))
         m.addAction(act)
 
     # -- UI handlers --------------------------------------------------------------
+    def _choose_interface_colour(self):
+        colour = QColorDialog.getColor(ACCENT, self, self.t["theme_pick"])
+        if colour.isValid():
+            self._set_interface_colour(colour)
+
+    def _set_interface_colour(self, colour: QColor):
+        self.cfg.set("gui", "accent_color", colour.name())
+        try:
+            self.cfg.save()
+        except OSError as exc:
+            QMessageBox.warning(self, "METEOR-X", str(exc))
+        apply_dark(QApplication.instance(), colour)
+        self.spec_floor_label.setStyleSheet(
+            f"font: 700 9px Consolas; color:{theme_color('#5ef7da').name()}")
+        self.header_state.setProperty("receiverState", None)
+
+    def _device_kind(self) -> str:
+        return self.dev.currentData() or ""
+
     def _dev_changed(self):
-        k = DEV_KEYS[self.dev.currentIndex()]
+        k = self._device_kind()
         for w in (self.rtl_gain, self.lbl_rtl_gain):
             w.setVisible(k == "rtlsdr")
         for w in (self.sp_grdb, self.sp_lna, self.lbl_grdb, self.lbl_lna, self.cb_ant, self.lbl_ant):
@@ -966,31 +1584,18 @@ class MainWindow(QMainWindow):
             w.setVisible(k == "lime")
         for w in (self.ed_puri, self.lbl_puri, self.sp_pgain, self.lbl_pgain):
             w.setVisible(k == "pluto")
-        for w in (self.file_row, self.lbl_file):
-            w.setVisible(k == "file")
         self.bias.setVisible(k in BIAS_KEYS)
         if k in BIAS_KEYS:
-            self.bias.blockSignals(True)
             self.bias.setChecked(self.cfg.getb("sdr", BIAS_KEYS[k], False))
-            self.bias.blockSignals(False)
         if hasattr(self, "_connected"):
             self._profile_status()
-
-    def _browse(self):
-        start = os.path.dirname(self.file_edit.text())
-        if not os.path.isdir(start):
-            start = self.cfg.iq_recordings_dir
-        p, _ = QFileDialog.getOpenFileName(self, self.t["file"], start,
-                                           "IQ (*.wav *.cu8 *.cs8 *.cs16 *.cf32 *.raw *.iq);;All (*.*)")
-        if p:
-            self.file_edit.setText(p)
 
     # -- receiver profiles -------------------------------------------------------
     def _pstore(self) -> profiles.ProfileStore:
         return profiles.ProfileStore(self.cfg.data_dir)
 
     def _busy(self) -> bool:
-        return self.engine.snapshot().state in ("armed", "recording", "file", "saving")
+        return self.engine.snapshot().state in ("armed", "recording", "saving")
 
     def _profiles_detect(self, startup: bool = False):
         """Identify the connected receivers, create profiles for new ones, select the active one."""
@@ -1004,56 +1609,70 @@ class MainWindow(QMainWindow):
             return
         self._connected = {d.key for d in found}
         st = self._pstore()
-        file_mode = (self.cfg.get("sdr", "device", "rtlsdr") or "").lower() == "file"
-        if not file_mode:
-            self._sync_cfg()                             # keep what is on screen for the current profile
-            st.update_settings(st.active_id, self.cfg)
+        self._sync_cfg()                             # keep what is on screen for the current profile
+        st.update_settings(st.active_id, self.cfg)
         act, msgs, _new = profiles.reconcile(st, found, self.cfg)
         for m in msgs:
             self.engine.log(m)
         if not found:
             self.engine.log(self.t["no_rx"])
-        if act is not None and not (startup and file_mode):
+        if act is not None:
             profiles.ProfileStore.apply(act, self.cfg)
             self._save_ini()
             self._widgets_from_cfg()
             if found:
                 self.engine.log(f"{self.t['prof_active']}: {act['name']}  [{act['identity']['key']}]")
+        self._refresh_device_list(found)
         self._profiles_refresh()
+
+    def _refresh_device_list(self, found):
+        """Offer only detected hardware types."""
+        previous = self._device_kind() or (self.cfg.get("sdr", "device", "") or "").lower()
+        connected_kinds = {device.kind for device in found}
+        self.dev.blockSignals(True)
+        self.dev.clear()
+        for key, label in zip(DEV_KEYS, self.t["devices"]):
+            if key in connected_kinds:
+                self.dev.addItem(label, key)
+        index = self.dev.findData(previous)
+        if index < 0:
+            active = self._pstore().active
+            if active and active["identity"]["key"] in self._connected:
+                index = self.dev.findData(active["identity"]["kind"])
+        self.dev.setCurrentIndex(index)
+        self.dev.blockSignals(False)
+        self._dev_changed()
 
     def _profiles_refresh(self):
         st = self._pstore()
         self.prof_cb.blockSignals(True)
         self.prof_cb.clear()
         for p in st.profiles:
-            on = p["identity"]["key"] in self._connected
-            self.prof_cb.addItem(("● " if on else "○ ") + p["name"], p["id"])
+            if p["identity"]["key"] not in self._connected:
+                continue
+            self.prof_cb.addItem(p["name"], p["id"])
             self.prof_cb.setItemData(self.prof_cb.count() - 1,
-                                     f"{p['identity']['key']}\n{self.t['connected'] if on else self.t['not_connected']}",
+                                     f"{p['identity']['key']}\n{self.t['connected']}",
                                      Qt.ToolTipRole)
         i = self.prof_cb.findData(st.active_id)
-        self.prof_cb.setCurrentIndex(max(i, 0))
+        self.prof_cb.setCurrentIndex(i)
         self.prof_cb.blockSignals(False)
+        self.profile_menu_button.setEnabled(i >= 0)
         self._profile_status()
 
     def _profile_status(self):
         t = self.t
         st = self._pstore()
         p = st.active
-        k = DEV_KEYS[self.dev.currentIndex()]
-        if k == "file":
-            self.prof_lbl.setText(t["file_mode"])
-            self.chk_preamp.setVisible(False)
-            return
-        if p is None:
+        k = self._device_kind()
+        if p is None or p["identity"]["key"] not in self._connected:
             self.prof_lbl.setText(t["no_rx"])
             self.chk_preamp.setVisible(False)
             return
         self._sync_cfg()
-        on = p["identity"]["key"] in self._connected
         lines = [f"{p['identity']['kind'].upper()} · SN {p['identity'].get('serial') or '?'}"
                  + (f" · {p['identity']['tuner']}" if p["identity"].get("tuner") else "")
-                 + f" · {'✔ ' + t['connected'] if on else '✖ ' + t['not_connected']}"]
+                 + f" · ✔ {t['connected']}"]
         cs = calib.CalStore(os.path.join(self.cfg.data_dir, "calibration.json"))
         c = cs.get_for(self.cfg, p["id"]) if p["identity"]["kind"] == k else None
         if c is not None:
@@ -1065,7 +1684,7 @@ class MainWindow(QMainWindow):
             if others:
                 lines.append("   " + t["cal_others"].format(lst=", ".join(others)))
         self.prof_lbl.setText("\n".join(lines))
-        self.prof_lbl.setStyleSheet("font-size:11px;color:" + ("#9fb3a8" if on and c is not None else "#e0b040"))
+        self.prof_lbl.setStyleSheet("font-size:11px;color:" + ("#9fb3a8" if c is not None else "#e0b040"))
         pa = p.get("preamp")
         self.chk_preamp.blockSignals(True)
         self.chk_preamp.setVisible(bool(pa))
@@ -1078,14 +1697,6 @@ class MainWindow(QMainWindow):
         self.btn_audio.setText(self.t["listen"] if on else self.t["muted"])
         self.engine.audio.set(on, self.sl_vol.value() / 100.0)
 
-    def _bias_toggled(self, on: bool):
-        kind = DEV_KEYS[self.dev.currentIndex()]
-        if kind not in BIAS_KEYS:
-            return
-        self._apply_settings()
-        if kind == "rtlsdr":
-            self.engine.command("bias_tee", enabled=on)
-
     def _preamp_toggled(self, on: bool):
         st = self._pstore()
         st.set_preamp_in_service(st.active_id, on)
@@ -1093,6 +1704,9 @@ class MainWindow(QMainWindow):
 
     def _switch_profile(self, pid: str) -> bool:
         st = self._pstore()
+        target = st.get(pid)
+        if target is None or target["identity"]["key"] not in self._connected:
+            return False
         if pid == st.active_id:
             return True
         if self._busy():
@@ -1115,15 +1729,15 @@ class MainWindow(QMainWindow):
         self._profiles_refresh()
 
     def _dev_picked(self, idx: int):
-        """Device type chosen by hand: use the profile of a receiver of that type (connected first)."""
-        k = DEV_KEYS[idx]
+        """Device type chosen by hand: use a connected receiver of that type."""
+        k = self.dev.itemData(idx)
         st = self._pstore()
         act = st.active
-        if k == "file" or (act and act["identity"]["kind"] == k):
+        if act and act["identity"]["kind"] == k:
             self._profile_status()
             return
-        cands = [p for p in st.profiles if p["identity"]["kind"] == k]
-        cands.sort(key=lambda p: p["identity"]["key"] not in self._connected)
+        cands = [p for p in st.profiles if p["identity"]["kind"] == k
+                 and p["identity"]["key"] in self._connected]
         if cands:
             self._switch_profile(cands[0]["id"])
         self._profiles_refresh()
@@ -1131,7 +1745,7 @@ class MainWindow(QMainWindow):
     def _profile_rename(self):
         st = self._pstore()
         p = st.active
-        if not p:
+        if not p or p["identity"]["key"] not in self._connected:
             return
         name, ok = QInputDialog.getText(self, "METEOR-X", self.t["rename_q"], text=p["name"])
         if ok and name.strip():
@@ -1141,12 +1755,15 @@ class MainWindow(QMainWindow):
     def _profile_delete(self):
         st = self._pstore()
         p = st.active
-        if not p or self._busy():
+        if not p or p["identity"]["key"] not in self._connected or self._busy():
             return
         if QMessageBox.question(self, "METEOR-X", self.t["delete_q"].format(name=p["name"])) == QMessageBox.Yes:
             st.delete(p["id"])
-            if st.active:
-                profiles.ProfileStore.apply(st.active, self.cfg)
+            next_connected = next((item for item in st.profiles
+                                   if item["identity"]["key"] in self._connected), None)
+            if next_connected:
+                st.set_active(next_connected["id"])
+                profiles.ProfileStore.apply(next_connected, self.cfg)
                 self._save_ini()
                 self._widgets_from_cfg()
             self._profiles_refresh()
@@ -1157,7 +1774,7 @@ class MainWindow(QMainWindow):
         ws = (self.dev, self.rtl_gain, self.sp_grdb, self.sp_lna, self.sp_hlna, self.sp_hvga, self.sp_lgain, self.sp_pgain)
         for w in ws:
             w.blockSignals(True)
-        self.dev.setCurrentIndex(DEV_KEYS.index(cur) if cur in DEV_KEYS else 0)
+        self.dev.setCurrentIndex(self.dev.findData(cur))
         try:
             self.rtl_gain.setValue(float(c.get("sdr", "rtl_gain_db", "38.6")))
         except ValueError:
@@ -1192,8 +1809,9 @@ class MainWindow(QMainWindow):
     def _sync_cfg(self):
         """Screen values -> cfg (memory only)."""
         c = self.cfg
-        k = DEV_KEYS[self.dev.currentIndex()]
-        c.set("sdr", "device", k)
+        k = self._device_kind()
+        if k:
+            c.set("sdr", "device", k)
         c.set("sdr", "rtl_gain_db", f"{self.rtl_gain.value():.1f}")
         c.set("sdr", "sdrplay_grdb", self.sp_grdb.value())
         c.set("sdr", "sdrplay_lna_state", self.sp_lna.value())
@@ -1207,13 +1825,49 @@ class MainWindow(QMainWindow):
         c.set("sdr", "pluto_gain_db", self.sp_pgain.value())
         if k in BIAS_KEYS:
             c.set("sdr", BIAS_KEYS[k], "yes" if self.bias.isChecked() else "no")
+        c.set("decoder", "dc_spike_removal", "yes" if self.dc_remove.isChecked() else "no")
+
+    def _dc_remove_toggled(self, enabled: bool):
+        self.cfg.set("decoder", "dc_spike_removal", "yes" if enabled else "no")
+        self._save_ini()
+        self.engine.command("dc_spike_removal", enabled=enabled)
+
+    def _gain_changed(self, *_):
+        # Throttle hardware calls while dragging, but keep applying the newest
+        # value during a continuous drag. Persist only after the hand pauses.
+        if not self._gain_timer.isActive():
+            self._gain_timer.start(120)
+        self._gain_save_timer.start(650)
+
+    def _live_gain_values(self):
+        return {
+            "rtlsdr": {"gain_db": self.rtl_gain.value()},
+            "sdrplay": {"grdb": self.sp_grdb.value(), "lna_state": self.sp_lna.value()},
+            "hackrf": {"lna_gain": self.sp_hlna.value(), "vga_gain": self.sp_hvga.value()},
+            "lime": {"gain_db": self.sp_lgain.value()},
+            "pluto": {"gain_db": self.sp_pgain.value()},
+        }
+
+    def _apply_live_gain(self):
+        self._gain_timer.stop()
+        kind = self._device_kind()
+        if kind in self._live_gain_values() and self.engine.snapshot().state in ("armed", "recording"):
+            self.engine.command("gain", device=kind, values=self._live_gain_values()[kind])
+
+    def _save_gain_settings(self):
+        self._sync_cfg()
+        if self._device_kind() == "sdrplay":
+            self.cfg.set("sdr", "sdrplay_agc", "no")
+        store = self._pstore()
+        store.update_settings(store.active_id, self.cfg)
+        self._save_ini()
+        self._profile_status()
 
     def _apply_settings(self):
         c = self.cfg
         self._sync_cfg()
         st = self._pstore()
         st.update_settings(st.active_id, c)
-        c.set("sdr", "file_path", self.file_edit.text())
         c.set("decoder", "mode", self.mode.currentText())
         c.set("gui", "auto_start", "yes" if self.chk_auto.isChecked() else "no")
         c.set("gui", "audio_volume", self.sl_vol.value())
@@ -1230,7 +1884,7 @@ class MainWindow(QMainWindow):
 
     def _calibration(self):
         snap = self.engine.snapshot()
-        if snap.state in ("armed", "recording", "file"):
+        if snap.state in ("armed", "recording"):
             QMessageBox.information(self, "METEOR-X", self.t["busy_cal"])
             return
         self._apply_settings()
@@ -1272,72 +1926,95 @@ class MainWindow(QMainWindow):
         if p:
             self.engine.command("import_tle", path=p)
 
-    def _refresh_iq_menu(self):
-        menu = self.iq_menu
-        menu.clear()
-        action = menu.addAction(self.t["iq_save"])
-        action.setCheckable(True)
-        action.setChecked(self.cfg.getb("recording", "save_baseband", False))
-        action.toggled.connect(self._set_iq_recording)
-        menu.addAction(self.t["iq_open_file"], self._open_iq_file)
-        menu.addAction(self.t["iq_open_folder"], self._open_iq_folder)
-        menu.addSeparator()
-        paths = outputs.recent_iq_recordings(self.cfg.iq_recordings_dir)
+    def _view_latest_mosaic(self, period="day"):
+        folder = os.path.join(self.cfg.output_dir, "Mosaics")
+        endings = ("_night_ir.png",) if period == "night" else ("_rgb124.png", "_rgb123.png", "_rgb221.png")
+        paths = [os.path.join(folder, name) for name in os.listdir(folder)
+                 if name.endswith(endings)] if os.path.isdir(folder) else []
         if not paths:
-            empty = menu.addAction(self.t["iq_empty"])
-            empty.setEnabled(False)
-        for path in paths:
-            try:
-                info = outputs.read_iq_recording(path)
-                start = datetime.fromisoformat(info["start_utc"]).astimezone().strftime("%d/%m %H:%M")
-                label = (f"{start}  {info.get('satellite') or 'Meteor'}  "
-                         f"{info['frequency_hz'] / 1e6:.3f} MHz")
-            except (KeyError, ValueError, TypeError):
-                label = os.path.basename(path)
-            recent = menu.addAction(label)
-            recent.setToolTip(path)
-            recent.triggered.connect(lambda _checked=False, p=path: self._play_iq(p))
-
-    def _set_iq_recording(self, enabled: bool):
-        self.cfg.set("recording", "save_baseband", "yes" if enabled else "no")
+            QMessageBox.information(self, "METEOR-X", self.t["mosaic_no_image"])
+            return
+        path = max(paths, key=lambda p: (os.path.basename(p)[:10],
+                                         p.endswith("_rgb124.png"), os.path.getmtime(p)))
         try:
-            self.cfg.save()
-        except OSError as exc:
+            if self.mosaic_dlg is None:
+                self.mosaic_dlg = CompositeDialog(self, self.t)
+            self.mosaic_dlg.load_composite(path)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
             QMessageBox.warning(self, "METEOR-X", str(exc))
-        self.logq.put("Pass IQ recording " + ("enabled" if enabled else "disabled") + " for the next pass")
+            return
+        self.mosaic_dlg.resize(1100, 820)
+        self.mosaic_dlg.show()
+        self.mosaic_dlg.raise_()
 
-    def _open_iq_folder(self):
-        folder = self.cfg.iq_recordings_dir
+    def _open_mosaics(self):
+        folder = os.path.join(self.cfg.output_dir, "Mosaics")
         os.makedirs(folder, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
-    def _open_iq_file(self):
-        folder = self.cfg.iq_recordings_dir
-        p, _ = QFileDialog.getOpenFileName(self, self.t["iq_open_file"], folder,
-                                           "Saved IQ (*.cs16);;All files (*.*)")
-        if p:
-            self._play_iq(p)
-
-    def _play_iq(self, path: str):
-        if self._busy():
-            QMessageBox.information(self, "METEOR-X", self.t["iq_busy"])
+    def _rebuild_mosaic(self):
+        day, ok = QInputDialog.getText(self, "METEOR-X", self.t["mosaic_day"],
+                                       text=datetime.now().strftime("%Y-%m-%d"))
+        if not ok:
             return
         try:
-            info = outputs.read_iq_recording(path)
-            norad = int(info["norad"]) if info.get("norad") is not None else None
-        except (ValueError, TypeError) as exc:
-            QMessageBox.warning(self, "METEOR-X", str(exc))
+            datetime.strptime(day, "%Y-%m-%d")
+        except ValueError:
+            QMessageBox.warning(self, "METEOR-X", self.t["mosaic_invalid_day"])
             return
-        self.engine.command("play_iq", path=path, sample_rate=info["sample_rate"],
-                            frequency_hz=info["frequency_hz"], norad=norad,
-                            satellite=info.get("satellite"), tle=info.get("tle"),
-                            mode=info.get("mode", "auto"))
+        self.logq.put(self.t["mosaic_started"].format(day=day))
+        def work():
+            try:
+                from . import mosaic
+                with mosaic.BUILD_LOCK:
+                    result = mosaic.build_day(self.cfg.output_dir, day, self.engine.log,
+                                              self.cfg.geti("recording", "city_min_population", 200_000),
+                                              self.cfg.map_text_scale)
+                if result is None:
+                    self.engine.log(self.t["mosaic_no_passes"].format(day=day))
+            except Exception as exc:
+                self.engine.log(f"Composite build failed: {exc}")
+        threading.Thread(target=work, name="MeteorX-Mosaic-Rebuild", daemon=True).start()
 
-    def _open_folder(self):
+    def _set_saved_image_mode(self, path: str | None):
+        self._opened_image_path = path
+        self.view_sel.setEnabled(path is None)
+        self.btn_enhance.setEnabled(path is None)
+        self.chk_mirror.setEnabled(path is None)
+        if path and self.enh_dlg is not None:
+            self.enh_dlg.close()
+
+    def _open_saved_image(self):
         snap = self.engine.snapshot()
-        d = snap.out_folder if snap.out_folder and os.path.isdir(snap.out_folder) else self.cfg.output_dir
-        os.makedirs(d, exist_ok=True)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(d))
+        folder = snap.out_folder if snap.out_folder and os.path.isdir(snap.out_folder) else self.cfg.output_dir
+        os.makedirs(folder, exist_ok=True)
+        path, _ = QFileDialog.getOpenFileName(
+            self, self.t["open_image"], folder,
+            "Images (*.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff);;All files (*.*)")
+        if path:
+            self._show_saved_image(path)
+
+    def _show_saved_image(self, path: str):
+        try:
+            img = read_saved_image(path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, self.t["open_image"], str(exc))
+            return
+        self._set_saved_image_mode(path)
+        self._preview_rev = self.engine.snapshot().preview_rev
+        self._force_view = False
+        self._shown = img
+        self.view.auto_fit = True
+        self.view.fit_mode = "width"
+        self.view._fit_source_width = None
+        self.view.show_array(img)
+        self.img_info.setText(f"{self.t['saved_image']}: {os.path.basename(path)}"
+                              f"  –  {img.shape[1]}×{img.shape[0]} px")
+        self.img_info.setToolTip(path)
+        self.btn_clear_image.setEnabled(True)
+        self.btn_full_image.setEnabled(True)
+        if self.full_image_dlg is not None and self.full_image_dlg.isVisible():
+            self.full_image_dlg.update_image(self.view.item.pixmap(), self.img_info.text())
 
     def _open_full_image(self):
         if getattr(self, "_shown", None) is None:
@@ -1426,19 +2103,13 @@ class MainWindow(QMainWindow):
             if im.packets == 0:
                 self.logq.put("No imagery decoded; keeping the previous image")
                 return
-            info_path = os.path.splitext(p)[0] + "_info.json"
-            try:
-                with open(info_path, "r", encoding="utf-8") as source:
-                    info = json.load(source)
-            except (OSError, ValueError):
-                info = {}
-            if not isinstance(info, dict):
-                info = {}
+            info = recorded_cadu_info(p)
             folder = os.path.dirname(p)
             if save_products:
                 folder = outputs.unique_path(os.path.splitext(p)[0] + "_products")
                 files = imaging.save_products(im, folder, os.path.basename(os.path.splitext(p)[0]),
-                                              ["221", "123"], True, False, True)
+                                              ["221", "123", "124"], True, False, True,
+                                              texture_fill=self.enh["texture_fill"])
                 self.logq.put(f"Saved {len(files)} image(s) in {folder}")
             elif self.engine.last_imager is not None:
                 return
@@ -1462,7 +2133,6 @@ class MainWindow(QMainWindow):
     # -- periodic refresh ------------------------------------------------------
     def _tick(self):
         self._tickn += 1
-        self._drain_render_results()
         while True:
             try:
                 self.logbox.appendPlainText(self.logq.get_nowait())
@@ -1476,9 +2146,9 @@ class MainWindow(QMainWindow):
         if self.header_state.property("receiverState") != st:
             self.header_state.setProperty("receiverState", st)
             self.header_state.setText(t.get(f"state_{st}", st).upper())
-            live = st in ("recording", "armed", "file")
-            color = "#4cff9a" if live else "#84ad9a"
-            border = "#327452" if live else "#2b4a3d"
+            live = st in ("recording", "armed")
+            color = ACCENT.name() if live else theme_color("#84ad9a").name()
+            border = theme_color("#327452" if live else "#2b4a3d").name()
             self.header_state.setStyleSheet(
                 f"background:#10241b;color:{color};border:1px solid {border};"
                 "border-radius:12px;padding:7px 12px;font-weight:700;letter-spacing:1px")
@@ -1490,20 +2160,15 @@ class MainWindow(QMainWindow):
                     == QMessageBox.Yes:
                 self._zadig()
         txt = t.get(f"state_{st}", st)
-        if snap.sat and st in ("armed", "recording", "file"):
+        if snap.sat and st in ("armed", "recording"):
             txt += f" – {snap.sat}"
-        col = {"recording": "#ff5a5a", "armed": "#e0b040", "file": "#60b0ff"}.get(st, "#9fb3a8")
+        col = {"recording": "#ff5a5a", "armed": "#e0b040"}.get(st, "#9fb3a8")
         self.state_lbl.setText(txt)
         self.state_lbl.setStyleSheet(f"font-size:14px;font-weight:700;padding:4px;color:{col}")
         self.btn_start.setEnabled(st in ("idle", "waiting"))
-        self.btn_stop.setEnabled(st in ("armed", "recording", "file"))
-        if snap.file_progress is not None and st == "file":
-            self.prog.setVisible(True)
-            self.prog.setValue(int(snap.file_progress * 100))
-        else:
-            self.prog.setVisible(False)
+        self.btn_stop.setEnabled(st in ("armed", "recording"))
 
-        active = st in ("armed", "recording", "file")
+        active = st in ("armed", "recording")
         self.led_sig.set(active and snap.signal)
         self.led_vit.set(active and snap.vit_locked)
         self.led_frm.set(active and snap.frame_lock and snap.frames_ok > 0)
@@ -1517,7 +2182,7 @@ class MainWindow(QMainWindow):
         elif self._tickn % 10 == 0:
             self.eye.update_traces(None)
             self.const.update_syms(None)
-        self._update_signal_cards(snap, active)
+            self.spec.update_spec(None)
 
         if self._tickn % 10 == 1:
             self._update_passes(snap)
@@ -1529,29 +2194,8 @@ class MainWindow(QMainWindow):
         if snap.preview_rev != self._preview_rev or getattr(self, "_force_view", False):
             self._preview_rev = snap.preview_rev
             self._force_view = False
+            self._set_saved_image_mode(None)
             self._refresh_view(force=True)
-
-    def _update_signal_cards(self, snap, active: bool):
-        cards = self.signal_cards
-        if not active:
-            for card in cards.values():
-                card.set_value("—")
-            return
-        cards["snr"].set_value(f"{snap.snr_db:.1f} dB" if snap.snr_db > -90 else "—",
-                               snap.snr_db < 3 and snap.snr_db > -90)
-        cards["ber"].set_value(f"{snap.vit_ber:.3f}", snap.vit_ber > 0.06)
-        cards["frames"].set_value(f"{snap.frames_ok} / {snap.frames_bad}")
-        cards["packets"].set_value(str(snap.packets))
-        stream_bad = snap.stream_ratio is not None and (snap.stream_ratio < 0.95 or snap.stream_dropped > 0)
-        cards["stream"].set_value("—" if snap.stream_ratio is None else
-                                  f"{100 * snap.stream_ratio:.1f} %", stream_bad)
-        cards["elev"].set_value("—" if snap.elevation is None else f"{snap.elevation:.1f}°")
-        cards["freq"].set_value(f"{snap.freq_hz / 1e6:.3f} MHz")
-        cards["dopp"].set_value(f"{snap.doppler_hz:+.0f} Hz")
-        cards["loop"].set_value(f"{snap.loop_hz:+.0f} Hz")
-        cards["mode"].set_value(snap.lrpt_mode or snap.mode or "—")
-        cards["rec"].set_value(f"{int(snap.rec_seconds) // 60:02d}:{int(snap.rec_seconds) % 60:02d}"
-                               if snap.recording else "—")
 
     def _update_passes(self, snap):
         t = self.t
@@ -1578,74 +2222,36 @@ class MainWindow(QMainWindow):
             self.next_lbl.setText("–")
 
     def _refresh_view(self, force=False):
+        if self._opened_image_path is not None:
+            return
         im = self.engine.last_imager
         if im is None or im is self._cleared_imager:
+            if getattr(self, "_shown", None) is None:
+                self.img_info.setText(self.t["no_image"])
+                self.img_info.setToolTip("")
             return
         self._cleared_imager = None
-        self._render_revision += 1
-        self._render_request = (self._render_revision, im, self.view_sel.currentText(),
-                                dict(self.enh), self.chk_mirror.isChecked(),
-                                dict(self.engine.last_pass or {}))
-        self._start_render()
-
-    def _start_render(self):
-        if self._render_request is None or (self._render_thread is not None and self._render_thread.is_alive()):
-            return
-        request = self._render_request
-        self._render_request = None
-
-        def work():
-            try:
-                result = self._compute_view(*request[1:])
-            except Exception as exc:  # a failed preview must not stop the receiver or the UI timer
-                self.engine.log(f"Image preview: {exc}")
-                result = {"image": None, "selection": request[2], "reason": self.t["view_render_error"]}
-            self._render_results.put((request[0], result))
-
-        self._render_thread = threading.Thread(target=work, name="METEOR-X-image", daemon=True)
-        self._render_thread.start()
-
-    def _drain_render_results(self):
-        while True:
-            try:
-                revision, result = self._render_results.get_nowait()
-            except queue.Empty:
-                break
-            if revision != self._render_revision or result is None:
-                continue
-            if result["image"] is None:
-                self._view_unavailable(result["selection"], result["reason"])
-                continue
-            img = result["image"]
-            self._shown = img
-            self.view.show_array(img)
-            self.img_info.setText(f"{result['label']}  –  {img.shape[1]}×{img.shape[0]} px  –  "
-                                  f"{self.t['ch']}: {', '.join(map(str, result['channels']))}  –  "
-                                  f"{result['packets']} packets")
-            self.btn_full_image.setEnabled(True)
-            if self.full_image_dlg is not None and self.full_image_dlg.isVisible():
-                self.full_image_dlg.update_image(self.view.item.pixmap(), self.img_info.text())
-            self._save_auto_enhanced(result["selection"], img)
-        if self._render_thread is not None and not self._render_thread.is_alive():
-            self._render_thread = None
-        self._start_render()
-
-    def _compute_view(self, im, sel, enh, mirrored, lp):
-        """Build the expensive image away from Qt's event loop so scopes keep repainting."""
-        chs = imaging.channel_images(im, fill=enh["fill"])
+        sel = self.view_sel.currentText()
+        chs = imaging.channel_images(im, fill=self.enh["fill"],
+                                    texture_fill=self.enh["texture_fill"])
         if not chs:
             return
         img = None
         if sel in view_products.PRODUCTS:
-            missing = [ch for ch in view_products.REQUIRED[sel] if ch not in chs]
+            missing = view_products.missing_channels(sel, chs)
             if missing:
-                return {"image": None, "selection": sel, "reason": self.t["view_wait_channels"].format(
-                    channels=", ".join(map(str, missing)))}
+                reason = (self.t["view_missing_3"] if missing == [3] and {1, 2, 4}.issubset(chs)
+                          else self.t["view_wait_channels"].format(
+                              channels=", ".join(map(str, missing))))
+                self._view_unavailable(sel, reason)
+                return
             track = scan_deg = None
-            if sel in ("MCIR", "MSA", "MSA-Precipitation"):
+            if sel in ("MCIR", "MSA"):
                 ch = 4 if sel == "MCIR" else 1
+                lp = self.engine.last_pass or {}
                 if not lp.get("tle") or len(im.line_time[ch - 1]) < 2:
-                    return {"image": None, "selection": sel, "reason": self.t["view_needs_geo"]}
+                    self._view_unavailable(sel, self.t["view_needs_geo"])
+                    return
                 offset = getattr(im, "geo_time_offset_s", 0.0)
                 key = (id(im), im._extent(ch - 1), tuple(lp["tle"]), offset)
                 if self._product_track_cache.get(ch, (None, None))[0] != key:
@@ -1653,51 +2259,82 @@ class MainWindow(QMainWindow):
                     self._product_track_cache[ch] = (key, tr)
                 tr = self._product_track_cache[ch][1]
                 if tr is None:
-                    return {"image": None, "selection": sel, "reason": self.t["view_geo_unavailable"]}
+                    self._view_unavailable(sel, self.t["view_geo_unavailable"])
+                    return
                 track, scan_deg = tr
             try:
                 img = view_products.render(chs, sel, track, scan_deg)
             except Exception as e:  # an optional view must not interrupt reception
                 self.engine.log(f"{sel}: {e}")
-                return {"image": None, "selection": sel, "reason": self.t["view_render_error"]}
+                self._view_unavailable(sel, self.t["view_render_error"])
+                return
             if img is None:
-                return {"image": None, "selection": sel, "reason": self.t["view_source_unavailable"]}
+                self._view_unavailable(sel, self.t["view_source_unavailable"])
+                return
         else:
             try:                                # the selector is rebuilt as channels arrive: never trust it
                 if sel.startswith("RGB"):
-                    img = imaging.composite(chs, sel.split()[1])
+                    spec = sel.split()[1]
+                    missing = [int(ch) for ch in spec if int(ch) not in chs]
+                    if missing:
+                        absent = sorted(set(missing))
+                        if absent == [3] and {1, 2, 4}.issubset(chs):
+                            reason = self.t["view_missing_3"]
+                        else:
+                            reason = self.t["view_wait_channels"].format(
+                                channels=", ".join(map(str, absent)))
+                        self._view_unavailable(sel, reason)
+                        return
+                    img = imaging.composite(chs, spec)
                 else:
                     img = chs.get(int(sel.split()[-1]))
             except (ValueError, IndexError):
                 img = None
         label = sel
         if img is None:
-            k = sorted(chs)[0]
-            img, label = chs[k], f"{self.t['ch']} {k}"
-        img = enhance.apply(img, enh["colour"], enh["infrared"])
+            self._view_unavailable(sel, self.t["view_source_unavailable"])
+            return
+        img = enhance.apply(img, self.enh["colour"], self.enh["infrared"])
         marks = [self.t[v].split(" (")[0].lower()           # "fill" is the normal default: not worth a mention
-                 for k, v in (("colour", "enh_colour"), ("infrared", "enh_ir")) if enh[k]]
+                 for k, v in (("colour", "enh_colour"), ("infrared", "enh_ir")) if self.enh[k]]
         # same orientation as the saved products: a northbound pass arrives south-first, so without the
         # half turn the picture - and any map drawn on it - would be upside down
-        rotated = bool(lp.get("rotated"))
+        rotated = bool((self.engine.last_pass or {}).get("rotated"))
         if rotated:
             img = img[::-1, ::-1]
         src_w = img.shape[1]
-        if enh["resize"]:
+        if self.enh["resize"]:
             img = geometry.correct(img)
             marks.append(self.t["enh_resize"].split(" (")[0].lower())
+        mirrored = self.chk_mirror.isChecked()
         if mirrored:
             img = img[:, ::-1]
             marks.append(self.t["mirror"].lower())
-        if enh["coast"] or enh["cities"]:
-            img = self._with_overlay(img, src_w, im=im, lp=lp, enh=enh, corrected=enh["resize"],
+        if self.enh["coast"] or self.enh["cities"]:
+            img = self._with_overlay(img, src_w, corrected=self.enh["resize"],
                                      rotated=rotated, mirror=mirrored)
             marks += [self.t[v].split(" (")[0].lower()
-                      for k, v in (("coast", "enh_coast"), ("cities", "enh_cities")) if enh[k]]
+                      for k, v in (("coast", "enh_coast"), ("cities", "enh_cities")) if self.enh[k]]
         if marks:
             label += " · " + ", ".join(marks)
-        return {"image": img, "label": label, "selection": sel,
-                "channels": tuple(sorted(chs)), "packets": im.packets}
+        self._shown = img
+        live = (self.engine.snapshot().state in ("armed", "recording") and
+                not (self.engine.last_pass or {}).get("completed", False))
+        if live and im is not self._live_view_imager:
+            self._live_view_imager = im
+            self.view.begin_live_follow()
+        # Northbound passes are turned north-up, so their newest lines are at the top;
+        # southbound passes grow downward. Follow the edge where lines actually arrive.
+        self.view.show_array(img, follow_edge=("top" if rotated else "bottom") if live else None)
+        note = (f"  –  Ch {5 if 5 in chs else 4} cloud proxy, not measured rainfall"
+                if sel == view_products.PRECIPITATION else "")
+        self.img_info.setText(f"{label}  –  {img.shape[1]}×{img.shape[0]} px  –  "
+                              f"{self.t['ch']}: {', '.join(str(k) for k in sorted(chs))}  –  {im.packets} packets{note}")
+        self.img_info.setToolTip("")
+        self.btn_full_image.setEnabled(True)
+        if self.full_image_dlg is not None and self.full_image_dlg.isVisible():
+            self.full_image_dlg.update_image(self.view.item.pixmap(), self.img_info.text())
+        self._save_auto_enhanced(sel, img)
 
     def _save_auto_enhanced(self, selection: str, img: np.ndarray):
         """Keep the selected enhanced view beside the finished pass's decoded images."""
@@ -1728,25 +2365,28 @@ class MainWindow(QMainWindow):
         self._shown = None
         self.view.clear_image()
         self.img_info.setText(f"{name} – {reason}")
+        self.img_info.setToolTip("")
         self.btn_full_image.setEnabled(False)
         if self.full_image_dlg is not None:
             self.full_image_dlg.close()
 
     def _clear_received_image(self):
         """Hide this pass until a new imager arrives or the user opens a CADU."""
-        self._render_revision += 1
-        self._render_request = None
+        self._set_saved_image_mode(None)
         self._cleared_imager = self.engine.last_imager
         self._shown = None
         self.view.clear_image()
         self.img_info.setText(self.t["no_image"])
+        self.img_info.setToolTip("")
         self.btn_clear_image.setEnabled(False)
         self.btn_full_image.setEnabled(False)
         if self.full_image_dlg is not None:
             self.full_image_dlg.close()
 
-    def _with_overlay(self, img, src_w, *, im, lp, enh, corrected, rotated, mirror):
+    def _with_overlay(self, img, src_w, *, corrected, rotated, mirror):
         """Draw the map overlays on the picture, or hand it back untouched if the pass cannot be placed."""
+        im = self.engine.last_imager
+        lp = self.engine.last_pass or {}
         chans = im.channels_present if im is not None else []
         ch = chans[0] if chans else None
         # The imager object lives for the whole pass and grows as frames arrive, so caching on its
@@ -1769,9 +2409,10 @@ class MainWindow(QMainWindow):
         track, scan_deg = tr
         try:
             return overlay.draw(img, track, scan_deg, src_w, corrected=corrected, rotated=rotated,
-                                mirror=mirror, coastlines=enh["coast"], cities=enh["cities"],
+                                mirror=mirror, coastlines=self.enh["coast"], cities=self.enh["cities"],
                                 min_pop=self.cfg.geti("recording", "city_min_population", 200000),
-                                coast_colour=enh["coast_colour"], city_colour=enh["city_colour"])
+                                coast_colour=self.enh["coast_colour"], city_colour=self.enh["city_colour"],
+                                city_scale=self.cfg.map_text_scale)
         except Exception as e:  # noqa: BLE001  (an overlay must never cost the user the picture)
             self.engine.log(f"Overlay: {e}")
             return img
@@ -1787,7 +2428,8 @@ class MainWindow(QMainWindow):
         d.setWindowTitle("METEOR-X - " + t["enh_title"])
         v = QVBoxLayout(d)
         for key, lab in (("resize", t["enh_resize"]), ("colour", t["enh_colour"]), ("infrared", t["enh_ir"]),
-                         ("fill", t["enh_fill"]), ("coast", t["enh_coast"]), ("cities", t["enh_cities"])):
+                         ("fill", t["enh_fill"]), ("texture_fill", t["enh_texture_fill"]),
+                         ("coast", t["enh_coast"]), ("cities", t["enh_cities"])):
             cb = QCheckBox(lab)
             cb.setChecked(self.enh[key])
             cb.toggled.connect(lambda on, k=key: self._set_enhancement(k, bool(on)))
@@ -1825,6 +2467,9 @@ class MainWindow(QMainWindow):
 
     def _set_enhancement(self, key, value):
         self.enh[key] = value
+        if key == "texture_fill":
+            self.cfg.set("recording", "fill_texture", "yes" if value else "no")
+            self._save_ini()
         self._save_window_state()
         self._refresh_view(force=True)
 
@@ -1855,7 +2500,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e):
         snap = self.engine.snapshot()
-        if snap.state in ("armed", "recording", "file"):
+        if snap.state in ("armed", "recording"):
             if QMessageBox.question(self, "METEOR-X", self.t["quit_q"]) != QMessageBox.Yes:
                 e.ignore()
                 return
@@ -1865,7 +2510,12 @@ class MainWindow(QMainWindow):
         e.accept()
 
 
-def apply_dark(app: QApplication):
+def apply_dark(app: QApplication, accent=None):
+    global ACCENT, _LUT
+    chosen = QColor(accent) if accent is not None else QColor(DEFAULT_ACCENT)
+    ACCENT = chosen if chosen.isValid() else QColor(DEFAULT_ACCENT)
+    ACCENT.setAlpha(255)
+    _LUT = _phosphor_lut()
     app.setStyle("Fusion")
     app.setFont(QFont("Segoe UI", 9))
     p = QPalette()
@@ -1877,7 +2527,7 @@ def apply_dark(app: QApplication):
     p.setColor(QPalette.Text, text)
     p.setColor(QPalette.Button, alt)
     p.setColor(QPalette.ButtonText, text)
-    p.setColor(QPalette.Highlight, QColor(43, 180, 105))
+    p.setColor(QPalette.Highlight, theme_color(QColor(43, 180, 105)))
     p.setColor(QPalette.HighlightedText, QColor(3, 15, 9))
     p.setColor(QPalette.ToolTipBase, alt)
     p.setColor(QPalette.ToolTipText, text)
@@ -1888,31 +2538,21 @@ def apply_dark(app: QApplication):
     style = """
         QMainWindow, QDialog { background-color: #07110f; color: #e2f8eb; }
         QLabel { background: transparent; color: #e2f8eb; }
-        QFrame#brandHeader { background-color: #0c1e18; border-bottom: 2px solid #2e9e61; }
         QLabel#brandMark, QLabel#brandName, QLabel#brandMission,
         QLabel#buildBadge, QLabel#stationBadge, QLabel#headerState {
             background: transparent; border: none; }
         QLabel#brandName { color: #eafff1; font-size: 22px; font-weight: 900; }
         QLabel#brandMission { color: #75b894; font-size: 9px; font-weight: 700; }
         QLabel#buildBadge { color: #4cff9a; background: #112c1f;
-            border: 1px solid #2f7f4e; border-radius: 10px; padding: 5px 10px;
-            font-family: Consolas; font-size: 10px; }
+            border: 1px solid #2f7f4e; border-radius: 6px; padding: 3px 7px;
+            font-family: Consolas; font-size: 9px; }
         QLabel#stationBadge { color: #accdb9; font-family: Consolas; font-size: 10px; }
         QLabel#workspaceTitle { color: #f0fff5; font-size: 15px; font-weight: 800; }
         QPushButton#clearImageButton { background: #10251d; color: #a8d8bc;
             border-color: #2c5840; padding: 4px 9px; }
         QPushButton#clearImageButton:hover { background: #1b4030; color: #eafff1; }
-        QTabWidget#signalTabs::pane { border: 1px solid #27513b; border-radius: 7px;
-            background: #091a14; }
-        QTabBar::tab { background: #10271d; color: #9dc9aa;
-            border: 1px solid #27513b; border-bottom: none;
-            padding: 5px 14px; margin-right: 3px; }
-        QTabBar::tab:selected { background: #1c4932; color: #eafff1;
-            border-color: #54da88; }
-        QFrame#signalCard { background: #10271d; border: 1px solid #28513c;
-            border-radius: 7px; }
-        QLabel#signalCardTitle { color: #8ebba0; font-size: 10px; font-weight: 700; }
-        QLabel#signalCardValue { color: #eafff1; font-size: 15px; font-weight: 700; }
+        QLabel#scopeHeader { color: #5ef7da; font: 700 10px Consolas;
+            padding: 3px 5px; background: #0b2b2a; border-left: 3px solid #4cff9a; }
         QGroupBox { background: #0c1b17; border: 1px solid #24503a; border-radius: 12px;
             margin-top: 12px; padding: 13px 8px 7px 8px; font-weight: 700; }
         QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 7px;
@@ -1949,7 +2589,7 @@ def apply_dark(app: QApplication):
         QHeaderView::section { background: #153326; color: #8dffc0;
             border: none; border-right: 1px solid #24503a; padding: 5px; font-weight: 700; }
         QTableWidget::item { padding: 2px 4px; }
-        QMenuBar { background: #0b1b16; color: #bfe6ce; padding: 3px 7px; }
+        QMenuBar { background: transparent; color: #e7fff0; padding: 3px 7px; }
         QMenuBar::item:selected { background: #1d4f34; color: #ecfff3; border-radius: 4px; }
         QMenu { background: #10271d; color: #e2f8eb; border: 1px solid #376e4d; }
         QMenu::item:selected { background: #23613e; }
@@ -1962,7 +2602,12 @@ def apply_dark(app: QApplication):
         QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
         QToolTip { background: #173324; color: #eafff1; border: 1px solid #58d988; }
     """
+    style = re.sub(r"#[0-9a-fA-F]{6}\b", lambda m: theme_color(m.group()).name(), style)
     app.setStyleSheet(style.replace("__CHECK_ICON__", check_icon.replace("\\", "/")))
+    for widget in app.allWidgets():
+        if isinstance(widget, DensityWidget) and widget._img is not None:
+            widget._render()
+        widget.update()
 
 
 def _warm_dsp(app: QApplication, lang: str):
@@ -2000,7 +2645,7 @@ def main(argv=None):
     if os.path.isfile(ico):
         from PySide6.QtGui import QIcon
         app.setWindowIcon(QIcon(ico))
-    apply_dark(app)
+    apply_dark(app, cfg.get("gui", "accent_color", DEFAULT_ACCENT.name()))
     _warm_dsp(app, i18n.normalize(cfg.get("gui", "language", "fr")))
     w = MainWindow(cfg)
     w.show_initial()

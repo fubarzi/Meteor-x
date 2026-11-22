@@ -1,64 +1,67 @@
-"""Additional MSU-MR views built from decoded channels.
+"""Additional live MSU-MR display recipes.
 
-MCIR and MSA place received cloud detail over a geolocated Earth image. The
-precipitation colours are a visual cloud-top estimate, not measured rainfall.
-Decoded channel files are never changed.
+The land/sea mask is a 0.05-degree raster made from Natural Earth's 1:10m land
+polygons. MCIR and MSA need a timed, geolocated pass to colour the surface.
+These are display-only products; decoded channel files are not changed.
 """
 from __future__ import annotations
 
+import gzip
 import os
 
 import numpy as np
 
 
-PRODUCTS = ("AVHRR 221 False Color", "Infrared (Ch 4)", "MCIR", "MSA",
-            "MSA-Precipitation", "MSU-MR 124 False Color")
+PRECIPITATION = "Precipitation Potential (Cloud Proxy)"
+PRODUCTS = (
+    "AVHRR 221 False Color",
+    "AVHRR 3a21 False Color",
+    "MSU-MR 124 False Color",
+    "AVHRR 124 False Color",
+    "Day Microphysics",
+    "10.8 µm Thermal IR (Uncalibrated)",
+    "3.9 µm Shortwave IR (Uncalibrated)",
+    "AVHRR 543b IR False Color",
+    "AVHRR 3b45 IR False Color",
+    PRECIPITATION,
+    "MCIR",
+    "MSA",
+)
 REQUIRED = {
     "AVHRR 221 False Color": (1, 2),
-    "Infrared (Ch 4)": (4,),
+    "AVHRR 3a21 False Color": (1, 2, 3),
+    "AVHRR 124 False Color": (1, 2, 5),
+    "Day Microphysics": (1, 4, 5),
+    "10.8 µm Thermal IR (Uncalibrated)": (5,),
+    "3.9 µm Shortwave IR (Uncalibrated)": (4,),
+    "AVHRR 543b IR False Color": (4, 5, 6),
+    "AVHRR 3b45 IR False Color": (4, 5, 6),
+    PRECIPITATION: (),
     "MCIR": (4,),
     "MSA": (1,),
-    "MSA-Precipitation": (1, 4),
     "MSU-MR 124 False Color": (1, 2, 4),
 }
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-EARTH_MAP = os.path.join(DATA_DIR, "earth_underlay.jpg")
-PRECIP_LUT = os.path.join(DATA_DIR, "precipitation_lut.png")
-_earth_map = None
-_precip_lut = None
+LAND_MASK = os.path.join(os.path.dirname(__file__), "data", "landmask.bin.gz")
+_land_mask = None
+_PRECIP_STOPS = np.array([0, 145, 175, 205, 232, 255], dtype=np.float32)
+_PRECIP_COLORS = np.array([
+    (20, 20, 20), (145, 145, 145), (60, 175, 80),
+    (245, 220, 65), (230, 75, 40), (65, 10, 20),
+], dtype=np.float32)
+_PRECIP_LUT = np.stack([
+    np.interp(np.arange(256), _PRECIP_STOPS, _PRECIP_COLORS[:, i]) for i in range(3)
+], axis=1).astype(np.uint8)
 
 
-def _read_rgb(path: str, scaled_size: tuple[int, int] | None = None) -> np.ndarray:
-    """Read a bundled image with Qt, already shipped for the desktop UI."""
-    from PySide6.QtCore import QSize
-    from PySide6.QtGui import QImage, QImageReader
-
-    reader = QImageReader(path)
-    if scaled_size is not None:
-        reader.setScaledSize(QSize(*scaled_size))
-    image = reader.read()
-    if image.isNull():
-        raise ValueError(f"cannot read {path}: {reader.errorString()}")
-    image = image.convertToFormat(QImage.Format_RGB888)
-    pixels = np.frombuffer(image.bits(), dtype=np.uint8)
-    return pixels.reshape(image.height(), image.bytesPerLine())[:, :image.width() * 3].reshape(
-        image.height(), image.width(), 3).copy()
-
-
-def earth_map() -> np.ndarray:
-    global _earth_map
-    if _earth_map is None:
-        # Half source resolution is enough for a 1568-pixel swath and saves RAM.
-        _earth_map = _read_rgb(EARTH_MAP, (6000, 3000))
-    return _earth_map
-
-
-def precipitation_lut() -> np.ndarray:
-    global _precip_lut
-    if _precip_lut is None:
-        # WXtoImg NO colours bundled by SatDump. Every column is the same.
-        _precip_lut = _read_rgb(PRECIP_LUT)[:, 128, :]
-    return _precip_lut
+def land_mask() -> np.ndarray:
+    global _land_mask
+    if _land_mask is None:
+        with gzip.open(LAND_MASK, "rb") as f:
+            raw = f.read()
+        if len(raw) != 7200 * 3600:
+            raise ValueError("invalid land mask")
+        _land_mask = np.frombuffer(raw, dtype=np.uint8).reshape(3600, 7200)
+    return _land_mask
 
 
 def _stretch(img: np.ndarray, valid: np.ndarray) -> np.ndarray:
@@ -75,12 +78,20 @@ def _stretch(img: np.ndarray, valid: np.ndarray) -> np.ndarray:
     return out
 
 
+def missing_channels(name: str, chs: dict[int, np.ndarray]) -> list[int]:
+    if name == PRECIPITATION:
+        return [] if 4 in chs or 5 in chs else [4, 5]
+    return [ch for ch in REQUIRED[name] if ch not in chs]
+
+
 def _stack(chs: dict[int, np.ndarray], spec: tuple[int, int, int], invert_last=False,
-           balance=False) -> np.ndarray:
+           balance=False, invert_all=False) -> np.ndarray:
     h = min(chs[i].shape[0] for i in set(spec))
     layers = [chs[i][:h] for i in spec]
     valid = np.logical_and.reduce([layer > 0 for layer in layers])
-    if invert_last:
+    if invert_all:
+        layers = [255 - layer for layer in layers]
+    elif invert_last:
         layers[-1] = 255 - layers[-1]
     if balance:
         layers = [_stretch(layer, valid) for layer in layers]
@@ -89,81 +100,94 @@ def _stack(chs: dict[int, np.ndarray], spec: tuple[int, int, int], invert_last=F
     return out
 
 
-def _cloud_scale(source: np.ndarray, infrared: bool) -> tuple[float, float]:
-    valid = source[source > 0]
-    if valid.size < 100:
-        return (0.0, 255.0)
-    return tuple(float(x) for x in np.percentile(valid, (5, 80) if infrared else (30, 98)))
+def _inverted_grey(source: np.ndarray) -> np.ndarray:
+    valid = source > 0
+    out = _stretch(255 - source, valid)
+    out[~valid] = 0
+    return out
 
 
-def _cloud_strength(source: np.ndarray, bounds: tuple[float, float], infrared: bool) -> np.ndarray:
-    lo, hi = bounds
-    if hi <= lo + 5:
-        return np.zeros(source.shape, np.float32)
-    value = (hi - source.astype(np.float32)) if infrared else (source.astype(np.float32) - lo)
-    return np.clip(value / (hi - lo), 0, 1)
+def _precipitation_proxy(chs: dict[int, np.ndarray]) -> np.ndarray:
+    """Colour the coldest-looking cloud structure; this does not estimate rainfall rate."""
+    source = chs[5] if 5 in chs else chs[4]
+    use_visible = 1 in chs and 2 in chs
+    if use_visible:
+        h = min(source.shape[0], chs[1].shape[0], chs[2].shape[0])
+        w = min(source.shape[1], chs[1].shape[1], chs[2].shape[1])
+        source = source[:h, :w]
+    valid = source > 0
+    if use_visible:
+        visible = np.minimum(chs[1][:h, :w], chs[2][:h, :w])
+        valid &= visible > 0
+    cold = _inverted_grey(source)
+    cloud = (_stretch(visible, valid) >= 150) if use_visible else (cold >= 180)
+    strength = np.clip((cold.astype(np.float32) - 145.0) / 75.0, 0.0, 1.0) * cloud
+    base = (cold.astype(np.float32) * 0.75)[..., None]
+    color = _PRECIP_LUT[cold].astype(np.float32)
+    out = np.clip(base * (1.0 - strength[..., None]) + color * strength[..., None], 0, 255).astype(np.uint8)
+    out[~valid] = 0
+    return out
 
 
-def _underlay_chunk(source: np.ndarray, lat: np.ndarray, lon: np.ndarray, infrared: bool,
-                    bounds: tuple[float, float], rain: np.ndarray | None = None,
-                    rain_bounds: tuple[float, float] | None = None) -> np.ndarray:
-    """Blend cloud detail and optional precipitation colours over the Earth map."""
-    background = earth_map()
+def _underlay_chunk(source: np.ndarray, lat: np.ndarray, lon: np.ndarray, infrared: bool) -> np.ndarray:
+    """Blend bright cloud pixels over a geographic land/sea colour underlay."""
+    mask = land_mask()
     geo_ok = np.isfinite(lat) & np.isfinite(lon)
-    h, w = background.shape[:2]
-    yi = np.clip(((90.0 - np.nan_to_num(lat)) * (h / 180.0)).astype(np.int32), 0, h - 1)
-    xi = np.mod(((np.nan_to_num(lon) + 180.0) * (w / 360.0)).astype(np.int32), w)
-    base = background[yi, xi].astype(np.float32)
-    cloud = _cloud_strength(source, bounds, infrared)
-    opacity = np.clip((cloud - 0.20) / 0.80, 0, 1) ** 1.15
-    out = base + (255.0 - base) * opacity[..., None]
-
-    if rain is not None and rain_bounds is not None:
-        # Cold, bright cloud tops suggest possible precipitation; this is a
-        # visual estimate because channel 4 does not measure rainfall.
-        thermal = cloud if infrared else _cloud_strength(rain, rain_bounds, True)
-        visible = _cloud_strength(rain, rain_bounds, False) if infrared else cloud
-        score = thermal * visible
-        amount = np.clip((score - 0.60) / 0.30, 0, 0.88) * (rain > 0)
-        lut_row = np.clip(65.0 - np.clip((score - 0.60) / 0.40, 0, 1) * 30.0,
-                          0, 255).astype(np.uint8)
-        colour = precipitation_lut()[lut_row].astype(np.float32)
-        out = out * (1.0 - amount[..., None]) + colour * amount[..., None]
-
-    out = np.clip(out, 0, 255).astype(np.uint8)
+    mh, mw = mask.shape
+    yf = np.clip((90.0 - np.nan_to_num(lat)) * (mh / 180.0) - 0.5, 0, mh - 1)
+    xf = np.mod((np.nan_to_num(lon) + 180.0) * (mw / 360.0) - 0.5, mw)
+    y0 = np.floor(yf).astype(np.int32)
+    x0 = np.floor(xf).astype(np.int32)
+    y1, x1 = np.minimum(y0 + 1, mh - 1), (x0 + 1) % mw
+    dy, dx = (yf - y0).astype(np.float32), (xf - x0).astype(np.float32)
+    land = ((mask[y0, x0] * (1 - dx) + mask[y0, x1] * dx) * (1 - dy) +
+            (mask[y1, x0] * (1 - dx) + mask[y1, x1] * dx) * dy) / 255.0
+    sea_rgb = np.array((27, 77, 126), dtype=np.float32)
+    land_rgb = np.array((73, 126, 72), dtype=np.float32)
+    base = sea_rgb + land[..., None] * (land_rgb - sea_rgb)
+    value = 255 - source if infrared else source
+    cloud = np.clip((value.astype(np.float32) - 80.0) / 175.0, 0, 1) ** 1.3
+    out = (base + (255.0 - base) * cloud[..., None]).astype(np.uint8)
     out[(source == 0) | ~geo_ok] = 0
     return out
 
 
 def render(chs: dict[int, np.ndarray], name: str, track=None, scan_deg: float | None = None) -> np.ndarray | None:
     """Render a named product; return None when its channels or geometry are unavailable."""
-    if name not in REQUIRED or not all(ch in chs for ch in REQUIRED[name]):
+    if name not in REQUIRED or missing_channels(name, chs):
         return None
     if name == "AVHRR 221 False Color":
         return _stack(chs, (2, 2, 1), balance=True)
+    if name == "AVHRR 3a21 False Color":
+        return _stack(chs, (3, 2, 1), balance=True)
     if name == "MSU-MR 124 False Color":
         return _stack(chs, (1, 2, 4), invert_last=True, balance=True)
-    if name == "Infrared (Ch 4)":
-        source = chs[4]
-        out = 255 - source
-        out[source == 0] = 0
-        return out
+    if name == "AVHRR 124 False Color":
+        return _stack(chs, (1, 2, 5), invert_last=True, balance=True)
+    if name == "Day Microphysics":
+        gamma = np.clip((chs[4].astype(np.float32) / 255.0) ** 2.5 * 255.0, 0, 255).astype(np.uint8)
+        return _stack({**chs, 4: gamma}, (1, 4, 5), balance=True)
+    if name == "10.8 µm Thermal IR (Uncalibrated)":
+        return _inverted_grey(chs[5])
+    if name == "3.9 µm Shortwave IR (Uncalibrated)":
+        return _inverted_grey(chs[4])
+    if name == "AVHRR 543b IR False Color":
+        return _stack(chs, (6, 5, 4), invert_all=True, balance=True)
+    if name == "AVHRR 3b45 IR False Color":
+        return _stack(chs, (4, 5, 6), invert_all=True, balance=True)
+    if name == PRECIPITATION:
+        return _precipitation_proxy(chs)
     if track is None or scan_deg is None:
         return None
     from . import geo
-    infrared = name == "MCIR"
-    channel = 4 if infrared else 1
+    channel = 4 if name == "MCIR" else 1
     source = chs[channel]
     h, w = source.shape
     nrows = min(h, len(track))
     out = np.zeros((h, w, 3), np.uint8)
     angles = geo.scan_angles(w, scan_deg)
-    bounds = _cloud_scale(source, infrared)
-    rain = chs.get(1 if infrared else 4) if name in ("MCIR", "MSA-Precipitation") else None
-    rain_bounds = _cloud_scale(rain, not infrared) if rain is not None else None
     for start in range(0, nrows, 32):
         rows = np.arange(start, min(start + 32, nrows))
         lat, lon = geo.look_latlon(track, angles, rows)
-        layer = rain[rows] if rain is not None and rain.shape[0] > rows[-1] else None
-        out[rows] = _underlay_chunk(source[rows], lat, lon, infrared, bounds, layer, rain_bounds)
+        out[rows] = _underlay_chunk(source[rows], lat, lon, name == "MCIR")
     return out

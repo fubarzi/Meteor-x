@@ -75,44 +75,6 @@ def open_new(path: str, mode: str = "xb"):
         return open(unique_path(path), mode)
 
 
-def recent_iq_recordings(iq_dir: str, limit: int = 12) -> list[str]:
-    """Newest saved pass IQ files, including files left by an interrupted pass."""
-    try:
-        entries = [e for e in os.scandir(iq_dir)
-                   if e.is_file() and e.name.lower().endswith(".cs16") and e.stat().st_size >= 4]
-    except OSError:
-        return []
-    entries.sort(key=lambda e: e.stat().st_mtime, reverse=True)
-    return [e.path for e in entries[:limit]]
-
-
-def read_iq_recording(path: str) -> dict:
-    """Return replay settings from the sidecar, or the rate/frequency in the file name."""
-    if not os.path.isfile(path) or not path.lower().endswith(".cs16"):
-        raise ValueError("IQ recording is missing or is not a .cs16 file")
-    meta_path = os.path.splitext(path)[0] + ".json"
-    try:
-        with open(meta_path, "r", encoding="utf-8") as f:
-            info = json.load(f)
-    except (OSError, ValueError):
-        info = {}
-    if not isinstance(info, dict):
-        info = {}
-    match = re.search(r"_IQ_(\d+)Hz_(\d+)Hz(?:_\d+)?\.cs16$", os.path.basename(path), re.I)
-    if match:
-        info.setdefault("sample_rate", int(match.group(1)))
-        info.setdefault("frequency_hz", int(match.group(2)))
-    try:
-        rate = float(info["sample_rate"])
-        frequency = float(info["frequency_hz"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("IQ recording has no usable sample rate or frequency") from exc
-    if not (1e3 <= rate <= 20e6 and 100e6 <= frequency <= 2e9):
-        raise ValueError("IQ recording sample rate or frequency is out of range")
-    info["sample_rate"], info["frequency_hz"] = rate, frequency
-    return info
-
-
 SESSION_DIR = re.compile(r"^\d{4}_\d{8}_\d{4}_")
 
 

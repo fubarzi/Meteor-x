@@ -20,6 +20,8 @@ TRACKED = ((57166, "M2-3", QColor(67, 225, 138)),
            (59051, "M2-4", QColor(91, 204, 255)))
 MAP_WIDTH, MAP_HEIGHT = 2560, 1280
 EARTH_RADIUS_KM = 6371.0
+MAJOR_CITY_POPULATION = 5_000_000
+MAX_MAJOR_CITY_LABELS = 15
 
 
 def position(sat: orbit.Satellite, when: datetime) -> tuple[float, float, float]:
@@ -63,10 +65,12 @@ def footprint_boundary(lat_deg: float, lon_deg: float, height_km: float,
 
 
 class TrackerMap(QWidget):
-    def __init__(self, station: tuple[float, float], station_name: str = "HOME", parent=None):
+    def __init__(self, station: tuple[float, float], station_name: str = "HOME",
+                 text_scale: float = 1.3, parent=None):
         super().__init__(parent)
         self.station = station
         self.station_name = station_name
+        self.text_scale = text_scale
         self.positions: dict[int, tuple[float, float]] = {}
         self.heights: dict[int, float] = {}
         self.tracks: dict[int, tuple[list[tuple[float, float]], list[tuple[float, float]]]] = {}
@@ -78,6 +82,12 @@ class TrackerMap(QWidget):
         self.pan_x = 0.0
         self.pan_y = 0.0
         self._drag_last = None
+        try:
+            self.major_cities = sorted(
+                (city for city in overlay.load_cities() if city[4] >= MAJOR_CITY_POPULATION),
+                key=lambda city: city[4], reverse=True)
+        except (OSError, ValueError):
+            self.major_cities = []
         self.setCursor(Qt.OpenHandCursor)
 
     def heightForWidth(self, width: int) -> int:
@@ -88,6 +98,9 @@ class TrackerMap(QWidget):
 
     def minimumSizeHint(self) -> QSize:
         return QSize(260, 130)
+
+    def _text_size(self, base: int) -> int:
+        return max(6, round(base * self.text_scale / 1.3))
 
     def _point(self, lat: float, lon: float, rect: QRectF) -> QPointF:
         """Flat world map with home longitude at the horizontal centre."""
@@ -185,6 +198,43 @@ class TrackerMap(QWidget):
         path.closeSubpath()
         p.drawPath(path)
 
+    def _draw_major_cities(self, p: QPainter, rect: QRectF):
+        """Label only large cities, keeping labels apart at every zoom level."""
+        p.setFont(QFont("Consolas", self._text_size(8)))
+        metrics = p.fontMetrics()
+        occupied = []
+        home = self._view_point(self._point(*self.station, rect), rect)
+        occupied.append(QRectF(home.x() - 8, home.y() - metrics.height(),
+                               metrics.horizontalAdvance(self.station_name) + 16,
+                               metrics.height() * 2))
+        drawn = set()
+        home_lat, home_lon = self.station
+        closest = sorted(self.major_cities, key=lambda city:
+                         (city[1] - home_lat) ** 2 +
+                         (math.cos(math.radians(home_lat)) *
+                          ((city[2] - home_lon + 180) % 360 - 180)) ** 2)[:3]
+        ordered = closest + [city for city in self.major_cities if city not in closest]
+        for name, lat, lon, _, _population in ordered:
+            if len(drawn) >= MAX_MAJOR_CITY_LABELS:
+                break
+            base = self._point(lat, lon, rect)
+            for copy in (-1, 0, 1):
+                point = self._view_point(base, rect, copy)
+                if name in drawn or not rect.contains(point):
+                    continue
+                width = metrics.horizontalAdvance(name) + 4
+                left = point.x() + 5 if point.x() + width + 5 < rect.right() else point.x() - width - 5
+                label = QRectF(left, point.y() - metrics.height() / 2, width, metrics.height())
+                if not rect.contains(label) or any(label.adjusted(-4, -3, 4, 3).intersects(box)
+                                                   for box in occupied):
+                    continue
+                p.setPen(QColor(181, 210, 215))
+                p.setBrush(QColor(181, 210, 215))
+                p.drawEllipse(point, 1.5, 1.5)
+                p.drawText(label, Qt.AlignLeft | Qt.AlignVCenter, name)
+                occupied.append(label.adjusted(-4, -3, 4, 3))
+                drawn.add(name)
+
     def paintEvent(self, _event):
         rect = self._map_rect()
         if self._world_pixmap is None:
@@ -200,7 +250,8 @@ class TrackerMap(QWidget):
                             rect.width() * self.zoom, rect.height() * self.zoom)
             if target.intersects(rect):
                 p.drawPixmap(target, self._world_pixmap, QRectF(self._world_pixmap.rect()))
-        p.setFont(QFont("Consolas", 8, QFont.Bold))
+        self._draw_major_cities(p, rect)
+        p.setFont(QFont("Consolas", self._text_size(8), QFont.Bold))
         for norad, name, colour in TRACKED:
             if norad in self.positions and norad in self.heights:
                 fill = QColor(colour)
@@ -236,12 +287,13 @@ class TrackerMap(QWidget):
                 p.setBrush(QColor(8, 31, 44))
                 p.drawEllipse(point, 5, 5)
                 p.setPen(colour)
-                label_x = point.x() + 7 if point.x() < rect.center().x() else point.x() - 34
+                label_width = p.fontMetrics().horizontalAdvance(name)
+                label_x = point.x() + 7 if point.x() < rect.center().x() else point.x() - label_width - 7
                 label_y = point.y() - 7 if point.y() > rect.center().y() else point.y() + 13
-                label_x = max(rect.left() + 2, min(label_x, rect.right() - 34))
+                label_x = max(rect.left() + 2, min(label_x, rect.right() - label_width - 2))
                 label_y = max(rect.top() + 11, min(label_y, rect.bottom() - 2))
                 p.drawText(QPointF(label_x, label_y), name)
-        p.setFont(QFont("Consolas", 7))
+        p.setFont(QFont("Consolas", self._text_size(7)))
         station_base = self._point(*self.station, rect)
         for copy in (-1, 0, 1):
             station = self._view_point(station_base, rect, copy)
@@ -256,7 +308,7 @@ class TrackerMap(QWidget):
         p.setBrush(Qt.NoBrush)
         p.drawRect(rect)
         p.setPen(QColor(168, 196, 205))
-        p.setFont(QFont("Consolas", 8))
+        p.setFont(QFont("Consolas", self._text_size(8)))
         p.drawText(QPointF(rect.left() + 8, rect.top() + 17), f"{self.zoom:.1f}×")
         p.end()
 
@@ -349,9 +401,11 @@ class SatelliteTracker(QGroupBox):
         hint.setStyleSheet("color:#829ca6;font-size:10px")
         layout.addWidget(hint)
         self.map = TrackerMap((self.observer.lat, self.observer.lon),
-                              cfg.get("station", "callsign", "").strip() or "HOME")
+                              cfg.get("station", "callsign", "").strip() or "HOME",
+                              cfg.map_text_scale)
         self.map.setToolTip(f"{self.observer.lat:.4f}°, {self.observer.lon:.4f}°\n"
                             "Flat world map centred on home longitude\n"
+                            "City labels: population 5 million or more\n"
                             "Shaded circles: geometric horizon (0° elevation)\n"
                             "Dim: previous 45 minutes · Bright: next 45 minutes\n"
                             "Wheel to zoom · Drag to pan · Double-click to return home")

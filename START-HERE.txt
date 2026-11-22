@@ -1,0 +1,25 @@
+METEOR-X 3.1.3 - clean Windows 64-bit package
+================================================
+METEOR-X is free and open-source software under the GNU GPL v3.
+It is free to download and use. It is a modified version of
+MeteorRX, originally created by amateur radio operator and developer
+Stephan (9H2WB / F5OWB) for the Malta Amateur Radio League.
+This build includes a redesigned interface and additional features.
+See LICENSE and README.md for the license and attribution.
+Corresponding source: https://github.com/fubarzi/Meteor-x
+
+1. Extract the entire ZIP to a writable folder.
+2. Edit meteorrx.ini with your station latitude, longitude and altitude_m.
+3. Connect a supported SDR and run METEOR-X.exe.
+4. Use Detect, configure gain, and start receiving when ready.
+   Automatic scheduling is off until you enable it in meteorrx.ini.
+
+This package contains fresh settings. It contains no received images,
+.cadu captures, mosaics, logs, receiver profiles or personal station data.
+In Image enhancements, Repair broad image gaps (estimated) can be switched
+on or off independently from Interpolate missing lines. It is on by default
+for the live view and saved PNGs after each pass. The filled pixels are
+illustrative; original .cadu frames are saved for exact reprocessing.
+Raw IQ recording and playback are absent.
+
+See README.md for detailed setup and driver instructions.

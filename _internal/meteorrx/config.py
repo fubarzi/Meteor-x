@@ -25,7 +25,7 @@ callsign      =
 [sdr]
 ; The receiver values below are those of the active receiver profile (data\receivers.json):
 ; each receiver (identified by its serial number) keeps its own settings and calibrations.
-; device = rtlsdr | sdrplay | hackrf | lime | pluto | file
+; device = rtlsdr | sdrplay | hackrf | lime | pluto
 device          = rtlsdr
 ; SDR centre frequency (MHz). 137.500 keeps the 137.900 channel clear of the tuner DC spike.
 center_mhz      = 137.500
@@ -91,16 +91,6 @@ pluto_sample_rate  = 2160000
 ; RX gain 0..71 dB, or auto (AGC slow attack)
 pluto_gain_db      = 50
 
-; ---- File playback (testing / re-processing) ------------------------
-; WAV IQ (SDR#, SatDump baseband .wav) or raw .cu8 / .cs8 / .cs16 / .cf32
-file_path       =
-; For raw files only (Hz); WAV files carry their own rate
-file_sample_rate = 1000000
-; Centre frequency of the recording (MHz), 0 = same as center_mhz
-file_center_mhz = 0
-; yes = paced in real time, no = as fast as the CPU allows
-file_realtime   = no
-
 [satellites]
 ; name = NORAD id ; frequencies MHz separated by "/" ; mode auto|72k|80k
 METEOR-M2 3 = 57166 ; 137.900 ; auto
@@ -123,6 +113,8 @@ mode            = auto
 ; Recording starts when the spectrum SNR exceeds this value (dB), when the carrier is detected
 ; (4th-power AFC, works far below this SNR) or on decoder lock
 trigger_snr_db  = 3.0
+; Remove the narrow center-frequency I/Q DC spike before spectrum and decoding
+dc_spike_removal = no
 ; Doppler correction from TLE during passes
 doppler         = yes
 ; Advanced DSP - empty = built-in values (measured with tools\bench_sensitivity.py).
@@ -147,6 +139,8 @@ geometric_correction = yes
 ; Smallest city labelled by the "Major cities" overlay in the Enhancements window. Lower it for a denser
 ; map (25000 is about the smallest that stays readable), raise it for only the big ones.
 city_min_population = 200000
+; Size multiplier for text on the tracker and city names on images/maps (0.8 to 2.5).
+map_text_scale      = 1.3
 ; Housekeeping of Documents\MeteorRX at start-up.
 ; purge_empty: yes = remove folders a pass left completely empty, no = keep them
 purge_empty         = yes
@@ -154,19 +148,24 @@ purge_empty         = yes
 ; value for an unattended station. This removes decoded images, so it only runs if you set it yourself.
 purge_days          = 0
 save_cadu           = yes
-; Save pass IQ beside MeteorRX.exe in IQ Recordings (~300 kS/s, 1.2 MB/s).
-save_baseband       = yes
+; Estimate short missing strips in displayed/saved PNGs. The .cadu stays original.
 fill_missing        = yes
+; Estimate broad lost-frame bands with neighbouring image texture.
+fill_texture        = yes
 ; Rotate images of northbound passes by 180 deg (north up)
 rotate_northbound   = yes
 ; Composite outputs: 221 = natural colour (ch2,ch2,ch1), 123 = (ch1,ch2,ch3)
-composites          = 221, 123
+composites          = 221, 123, 124
+; After each reception, update separate daytime colour and nighttime IR maps in Mosaics/.
+mosaic_auto         = yes
 ; Also save inverted versions of the IR channels (4, 5, 6)
 ir_inverted         = yes
 
 [gui]
 ; Interface language: fr | en | it | es | de  (table in meteorrx/i18n.py; add a language there)
 language        = fr
+; Green interface highlights by default. Change from the Colour menu in the top bar.
+accent_color    = #4cff9a
 ; Start the automatic scheduler at launch
 auto_start      = yes
 ; Window at launch: maximized | fullscreen | last (size/position of the previous session). F11 = full screen
@@ -253,14 +252,14 @@ class Config:
             return fallback
 
     @property
+    def map_text_scale(self) -> float:
+        return min(2.5, max(0.8, self.getf("recording", "map_text_scale", 1.3)))
+
+    @property
     def output_dir(self) -> str:
         d = self.get("recording", "output_dir", "{documents}\\MeteorRX")
         d = d.replace("{documents}", documents_dir()).replace("\\", os.sep)
         return os.path.expandvars(d)
-
-    @property
-    def iq_recordings_dir(self) -> str:
-        return os.path.join(os.path.dirname(os.path.abspath(self.path)), "IQ Recordings")
 
     @property
     def data_dir(self) -> str:

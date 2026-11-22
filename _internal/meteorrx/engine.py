@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
-from . import audio, imaging, orbit, outputs, sdr
+from . import audio, dc_filter, imaging, orbit, outputs, sdr
 from .receiver import Receiver, ReceiverConfig, dsp_from_config, warm_up
 
 
@@ -24,7 +24,7 @@ def utcnow() -> datetime:
 
 @dataclass
 class Snapshot:
-    state: str = "idle"              # idle | waiting | armed | recording | saving | file
+    state: str = "idle"              # idle | waiting | armed | recording | saving
     message: str = ""
     source: str = ""
     sat: str = ""
@@ -53,7 +53,6 @@ class Snapshot:
     recording: bool = False
     rec_seconds: float = 0.0
     out_folder: str = ""
-    file_progress: float | None = None
     tle_info: str = ""
     level_dbfs: float = -999.0        # Meteor channel power (noise removed)
     n0_dbfs_hz: float = -999.0
@@ -64,21 +63,19 @@ class Snapshot:
 
 class Session:
     def __init__(self, engine: "Engine", sat: orbit.Satellite | None, pas: orbit.Pass | None, mode: str,
-                 manual: bool, file_spec: dict | None = None):
+                 manual: bool):
         self.e = engine
         cfg = engine.cfg
         self.sat, self.pas, self.manual = sat, pas, manual
-        self.source = (sdr.FileSource(file_spec["path"], file_spec["sample_rate"],
-                                      file_spec["frequency_hz"], False)
-                       if file_spec else sdr.open_source(cfg))
-        recording_info = getattr(self.source, "recording_info", None)
-        freqs = ([recording_info["frequency_hz"]] if recording_info else
-                 [f * 1e6 for f in (sat.freqs_hz if sat else [137.9])])
+        self.source = sdr.open_source(cfg)
+        freqs = [f * 1e6 for f in (sat.freqs_hz if sat else [137.9])]
         dsp = dsp_from_config(cfg)
         rc = ReceiverConfig(sample_rate=self.source.sample_rate, center_hz=self.source.center_hz, freqs_hz=freqs,
                             mode=mode, trigger_snr_db=cfg.getf("decoder", "trigger_snr_db", 3.0),
-                            ppm=0.0 if recording_info else cfg.getf("sdr", "ppm", 0.0), dsp=dsp)
+                            ppm=cfg.getf("sdr", "ppm", 0.0), dsp=dsp)
         self.rx = Receiver(rc, cadu_sink=self._cadu)
+        self.dc_spike_removal = cfg.getb("decoder", "dc_spike_removal", False)
+        self.dc_filter = dc_filter.DcOffsetRemover(self.source.sample_rate)
         mon = getattr(engine, "audio", None)
         self.rx.audio_sink = mon.push if mon is not None else None
         self.mode = mode
@@ -88,9 +85,6 @@ class Session:
         self.last_signal = time.monotonic()
         self._below_horizon_since: float | None = None
         self.cadu_f = None
-        self.bb_f = None
-        self.bb_frequency = None
-        self.bb_paths: list[str] = []
         # Folder/prefix are allocated on the first write: 0007_20261027_0912_METEOR-M2-4 (persistent
         # sequence number, never reused, so a restart can never overwrite a previous reception).
         self._stamp = (pas.aos if pas else self.start_utc).strftime("%Y%m%d_%H%M")
@@ -103,17 +97,11 @@ class Session:
         self._warned_rate = self._warned_drop = False
         self._last_dropped = 0
         self.save_cadu = cfg.getb("recording", "save_cadu", True)
-        self.save_bb = cfg.getb("recording", "save_baseband", False) and not self.source.is_file
-        if self.save_bb and pas is not None:
-            # Capture the complete scheduled pass, including the pre-AOS minute.
-            self.rx.baseband_sink = self._bb
-        self.doppler = cfg.getb("decoder", "doppler", True) and sat is not None and sat.sat is not None \
-            and not self.source.is_file
+        self.doppler = cfg.getb("decoder", "doppler", True) and sat is not None and sat.sat is not None
         self.preview_rev = 0
         self.cal_k = self._calibration(cfg)
         self._t_prev = 0.0
-        if not self.source.is_file:
-            warm_up(rc)                        # DSP ready before the SDR starts streaming
+        warm_up(rc)                        # DSP ready before the SDR starts streaming
         self.source.start()
 
     def _check_stream(self):
@@ -142,8 +130,6 @@ class Session:
     def _calibration(self, cfg) -> float | None:
         """S-meter constant of the active receiver profile (None = uncalibrated / other receiver)."""
         from . import calib, profiles
-        if self.source.is_file:
-            return None
         if getattr(self.source, "warning", ""):
             self.e.log("WARNING: " + self.source.warning)
         store = profiles.ProfileStore(cfg.data_dir)
@@ -180,51 +166,13 @@ class Session:
             self.cadu_f = outputs.open_new(os.path.join(self.folder, self.prefix + ".cadu"))
         self.cadu_f.write(cadu)
 
-    def _bb(self, x: np.ndarray):
-        try:
-            frequency = int(round(self.rx.active_freq))
-            if self.bb_f is None or frequency != self.bb_frequency:
-                if self.bb_f is not None:
-                    self.bb_f.close()
-                self._ensure_folder()
-                iq_dir = self.e.cfg.iq_recordings_dir
-                os.makedirs(iq_dir, exist_ok=True)
-                path = os.path.join(iq_dir, f"{self.prefix}_IQ_{int(round(self.rx.chan_rate))}Hz_"
-                                             f"{frequency}Hz.cs16")
-                self.bb_f = outputs.open_new(path)
-                self.bb_frequency = frequency
-                self.bb_paths.append(self.bb_f.name)
-                info = {"satellite": self.sat.name if self.sat else None,
-                        "norad": self.sat.norad if self.sat else None,
-                        "tle": list(self.sat.tle) if self.sat and self.sat.tle else None,
-                        "sample_rate": self.rx.chan_rate, "frequency_hz": frequency,
-                        "mode": self.mode,
-                        "start_utc": utcnow().isoformat(), "source": self.source.name,
-                        "pass_aos_utc": self.pas.aos.isoformat() if self.pas else None,
-                        "pass_los_utc": self.pas.los.isoformat() if self.pas else None,
-                        "session_folder": self.folder}
-                with open(os.path.splitext(self.bb_f.name)[0] + ".json", "x", encoding="utf-8") as f:
-                    json.dump(info, f, indent=2)
-            v = np.clip(x.view(np.float32) * 8192.0, -32767, 32767).astype("<i2")
-            self.bb_f.write(v.tobytes())
-        except OSError as exc:
-            self.e.log(f"IQ recording stopped: {exc}")
-            self.rx.baseband_sink = None
-            self.save_bb = False
-            if self.bb_f is not None:
-                try:
-                    self.bb_f.close()
-                except OSError:
-                    pass
-                self.bb_f = None
-
     # -- processing -----------------------------------------------------------
     def step(self) -> bool:
         """Process one block. Returns False when the session must end."""
         # Keep the scheduled receiver alive until the satellite has left the same 0-degree
         # horizon shown by the tracker's receive ring. Check this even during a stream gap.
         in_ring = True
-        if self.sat is not None and not self.manual and not self.source.is_file:
+        if self.sat is not None and not self.manual:
             now_utc = utcnow()
             try:
                 in_ring = self.e.observer.look(self.sat, now_utc)[1] >= 0
@@ -245,6 +193,8 @@ class Session:
             return False
         if len(blk) == 0:
             return True
+        if self.dc_spike_removal:
+            blk = self.dc_filter.process(blk)
         if self.doppler:
             rr = self.e.observer.look(self.sat, utcnow())[3]
             self.rx.set_range_rate(rr)
@@ -253,9 +203,8 @@ class Session:
         if now - self._t_flush > 2.0:          # data on disk even if the app is killed / PC crashes
             self._t_flush = now
             self._check_stream()
-            for f in (self.cadu_f, self.bb_f):
-                if f:
-                    f.flush()
+            if self.cadu_f:
+                self.cadu_f.flush()
         locked = self.rx.locked_chain is not None
         if (self.rx.signal_present or locked) and in_ring:
             self.last_signal = now
@@ -265,18 +214,14 @@ class Session:
                 why = "carrier detected (AFC)" if self.rx.carrier_detected and self.rx.snr_db < \
                     self.rx.rc.trigger_snr_db else f"SNR {self.rx.snr_db:.1f} dB"
                 self.e.log(f"Signal detected ({why}, offset {self.rx.total_offset_hz():+.0f} Hz) - recording started")
-                if self.save_bb and self.rx.baseband_sink is None:
-                    self.rx.baseband_sink = self._bb
         # end conditions
-        if self.source.is_file:
-            return True
         decoded = sum(st.frames_ok for st in self.rx.chain_stats())
         # A recording started on something that never decodes (interference, a spur, a neighbouring
         # emitter) is a false trigger: give up instead of filling the disk and, worse, swallowing the
         # next real pass into this session. Only in automatic mode: a manual recording is someone sitting
         # there on purpose - testing an antenna, chasing an interferer - and must not be cut short.
         false_s = self.e.cfg.getf("recording", "false_trigger_s", 300)
-        if self.recording and not decoded and false_s > 0 and not self.manual and not self.save_bb \
+        if self.recording and not decoded and false_s > 0 and not self.manual \
                 and self.rec_start is not None \
                 and now - self.rec_start > false_s:
             self.e.log(f"Nothing decoded {false_s:.0f} s after the signal was detected "
@@ -286,8 +231,7 @@ class Session:
         # In manual mode the session normally runs until the user stops it, but once a pass has actually
         # been decoded, losing the signal means that pass is over: save it rather than let the next one
         # be appended to the same image.
-        if self.recording and now - self.last_signal > loss and (not self.manual or decoded) \
-                and not (self.save_bb and self.pas is not None and not self.manual):
+        if self.recording and now - self.last_signal > loss and (not self.manual or decoded):
             self.e.log(f"No signal for {loss:.0f} s - stopping")
             return False
         return True
@@ -297,12 +241,11 @@ class Session:
             self.source.stop()
         except Exception:
             pass
-        for f in (self.cadu_f, self.bb_f):
-            if f:
-                try:
-                    f.close()
-                except OSError as exc:
-                    self.e.log(f"Recording close error: {exc}")
+        if self.cadu_f:
+            try:
+                self.cadu_f.close()
+            except OSError as exc:
+                self.e.log(f"Recording close error: {exc}")
         files = []
         im = self.rx.imager
         if im.packets > 0:
@@ -313,7 +256,8 @@ class Session:
             files = imaging.save_products(im, self.folder, self.prefix, comps,
                                           cfg.getb("recording", "fill_missing", True), rotate,
                                           cfg.getb("recording", "ir_inverted", True),
-                                          cfg.getb("recording", "geometric_correction", True))
+                                          cfg.getb("recording", "geometric_correction", True),
+                                          cfg.getb("recording", "fill_texture", True))
             st = [s.__dict__ for s in self.rx.chain_stats()]
             # the TLE is recorded with the pass: replaying the .cadu months later must geolocate with the
             # elements the pass was actually received against, not with whatever is current then
@@ -328,6 +272,19 @@ class Session:
                     "channels": [c + 1 for c in im.channels_present], "files": [os.path.basename(f) for f in files]}
             with outputs.open_new(os.path.join(self.folder, self.prefix + "_info.json"), "x") as f:
                 json.dump(info, f, indent=2, default=str)
+            # Preserve the instrument's true scan-line times for mosaics.
+            # RGB 123 and 124 both use channel 2 as their row reference.
+            if {0, 1}.issubset(im.channels_present) and ({2, 3} & set(im.channels_present)) \
+                    and self.sat and self.sat.tle:
+                try:
+                    np.save(os.path.join(self.folder, self.prefix + "_mosaic_times.npy"), im.row_times(1))
+                except (OSError, ValueError) as exc:
+                    self.e.log(f"Mosaic timing unavailable: {exc}")
+            if 3 in im.channels_present and self.sat and self.sat.tle:
+                try:
+                    np.save(os.path.join(self.folder, self.prefix + "_mosaic_times_ch4.npy"), im.row_times(3))
+                except (OSError, ValueError) as exc:
+                    self.e.log(f"Night IR timing unavailable: {exc}")
         return files
 
 
@@ -357,7 +314,6 @@ class Engine:
         self._t_pub = 0.0
         self._t_tle = 0.0
         self._tle_ok = False
-        self._pending_tle_update = False
         self.usb_driver_alert = False   # read and cleared by the GUI
         self.last_imager = None
         self.last_pass = None           # what the GUI needs to geolocate the picture on screen
@@ -415,7 +371,6 @@ class Engine:
                     if not ok:
                         self._end_session()
                 else:
-                    self._apply_pending_tle_update()
                     self._retry_tles()
                     self._refresh_passes()
                     self._maybe_arm()
@@ -445,16 +400,7 @@ class Engine:
                 sat = next((s for s in self.sats if s.name == kw.get("sat")), None)
                 mode = kw.get("mode") or (sat.mode if sat else self.cfg.get("decoder", "mode", "auto"))
                 pas = None
-                file_info = None
-                if self.cfg.get("sdr", "device", "").strip().lower() == "file":
-                    try:
-                        file_info = outputs.read_iq_recording(self.cfg.get("sdr", "file_path", ""))
-                    except ValueError:
-                        pass
-                if file_info is not None:
-                    sat = self._iq_satellite(file_info, sat)
-                    mode = file_info.get("mode") if file_info.get("mode") in ("auto", "72k", "80k") else "auto"
-                elif sat:
+                if sat:
                     now = utcnow()
                     pas = next((p for p in self.passes if p.sat is sat and p.aos - timedelta(minutes=5) <= now <= p.los),
                                None)
@@ -463,32 +409,32 @@ class Engine:
                 if self.session:
                     self.log("Stopped by user")
                     self._end_session()
-            elif name == "bias_tee":
-                if self.session and isinstance(self.session.source, sdr.RtlSdrSource):
-                    source = self.session.source
-                    try:
-                        source.set_bias_tee(bool(kw.get("enabled")))
-                        self.log(f"RTL-SDR Bias-T {'ON' if source._bias else 'OFF'} on serial "
-                                 f"{source.identity.serial}")
-                    except sdr.SdrError as e:
-                        self.log(f"SDR: {e}")
-            elif name == "play_iq":
-                if self.session is not None:
-                    self.log("Stop the current reception before replaying an IQ pass")
+            elif name == "gain":
+                if self.session is None:
                     continue
-                sat = self._iq_satellite(kw)
-                mode = kw.get("mode") or (sat.mode if sat else self.cfg.get("decoder", "mode", "auto"))
-                self._open_session(sat, None, mode, manual=True, file_spec=kw)
+                src = self.session.source
+                if getattr(getattr(src, "identity", None), "kind", None) != kw.get("device"):
+                    continue
+                try:
+                    gain = src.set_gain(**kw["values"])
+                    now = time.monotonic()
+                    if now - getattr(self, "_last_gain_log", 0.0) >= 1.0:
+                        self.log(f"Live gain: {gain}")
+                        self._last_gain_log = now
+                except Exception as exc:  # gain errors must not end a recording
+                    self.log(f"Live gain failed: {exc}")
+            elif name == "dc_spike_removal":
+                enabled = bool(kw.get("enabled"))
+                if self.session is not None:
+                    self.session.dc_spike_removal = enabled
+                    self.session.dc_filter.reset()
+                self.log("DC spike removal " + ("ON" if enabled else "OFF"))
             elif name == "auto":
                 self.auto = bool(kw.get("enabled"))
                 self.log("Automatic scheduling " + ("ON" if self.auto else "OFF"))
             elif name == "reload_tle":
-                if self.session is not None:
-                    self._pending_tle_update = True
-                    self.log("TLE update queued until reception stops")
-                else:
-                    self._update_tles(force=True)
-                    self._refresh_passes(force=True)
+                self._update_tles(force=True)
+                self._refresh_passes(force=True)
             elif name == "import_tle":
                 try:
                     if orbit.import_tle_file(kw["path"], self.sats, self._tle_cache, log=self.log):
@@ -502,35 +448,9 @@ class Engine:
                                                self.cfg.getf("station", "altitude_m"))
                 self._refresh_passes(force=True)
 
-    def _iq_satellite(self, info: dict, fallback: orbit.Satellite | None = None) -> orbit.Satellite | None:
-        """Use the satellite and TLE stored with an IQ pass, even after the live TLE changes."""
-        try:
-            norad = int(info["norad"])
-        except (KeyError, TypeError, ValueError):
-            return fallback
-        sat = next((s for s in self.sats if s.norad == norad), fallback)
-        tle = info.get("tle")
-        if not isinstance(tle, (list, tuple)) or len(tle) != 2:
-            return sat
-        mode = info.get("mode") if info.get("mode") in ("auto", "72k", "80k") else "auto"
-        recorded = orbit.Satellite(info.get("satellite") or (sat.name if sat else "METEOR"),
-                                   norad, [float(info["frequency_hz"]) / 1e6], mode)
-        try:
-            recorded.load(*tle)
-        except (ValueError, TypeError):
-            self.log("Recorded TLE invalid; replaying with the current TLE")
-            return sat
-        return recorded
-
     @property
     def _tle_cache(self) -> str:
         return os.path.join(self.cfg.data_dir, "tle.txt")
-
-    def _apply_pending_tle_update(self):
-        if self._pending_tle_update and self.session is None:
-            self._pending_tle_update = False
-            self._update_tles(force=True)
-            self._refresh_passes(force=True)
 
     def _update_tles(self, force: bool = False):
         urls = [u.strip() for u in (self.cfg.get("tle", "urls", "") or "").split(",") if u.strip()] or None
@@ -579,9 +499,9 @@ class Engine:
             self._open_session(p.sat, p, p.sat.mode, manual=False)
             self.passes.pop(0)
 
-    def _open_session(self, sat, pas, mode, manual: bool, file_spec: dict | None = None):
+    def _open_session(self, sat, pas, mode, manual: bool):
         try:
-            self.session = Session(self, sat, pas, mode, manual, file_spec=file_spec)
+            self.session = Session(self, sat, pas, mode, manual)
             src = self.session.source
             extra = f", {src.gain_desc}" if getattr(src, "gain_desc", "") else ""
             extra += f", {src.mode} streaming" if getattr(src, "mode", "") else ""
@@ -602,12 +522,20 @@ class Engine:
             self.snap.state = "saving"
         try:
             files = s.finish() if save else []
-            saved_iq = [p for p in s.bb_paths if os.path.isfile(p) and os.path.getsize(p) >= 4]
-            if saved_iq:
-                self.log(f"Saved {len(saved_iq)} IQ recording(s) in "
-                         f"{self.cfg.iq_recordings_dir}")
             if files:
                 self.log(f"Saved {len(files)} image(s) in {s.folder}")
+                if self.cfg.getb("recording", "mosaic_auto", True) and s.sat and s.sat.tle:
+                    day = s.start_utc.astimezone().strftime("%Y-%m-%d")
+                    def rebuild():
+                        try:
+                            from . import mosaic
+                            with mosaic.BUILD_LOCK:
+                                mosaic.build_day(self.cfg.output_dir, day, self.log,
+                                                 self.cfg.geti("recording", "city_min_population", 200_000),
+                                                 self.cfg.map_text_scale)
+                        except Exception as exc:  # mosaic failure must not interrupt reception
+                            self.log(f"Composite build failed: {exc}")
+                    threading.Thread(target=rebuild, name="MeteorX-Mosaic", daemon=True).start()
             elif s.rx.imager.packets == 0:
                 self.log("No imagery decoded")
         except Exception as e:  # noqa: BLE001
@@ -651,7 +579,7 @@ class Engine:
             snap.state = "waiting" if self.auto and self.passes else "idle"
         else:
             rx = s.rx
-            snap.state = "file" if s.source.is_file else ("recording" if s.recording else "armed")
+            snap.state = "recording" if s.recording else "armed"
             snap.source = s.source.name
             snap.sat = s.sat.name if s.sat else "?"
             snap.mode = s.mode
@@ -696,8 +624,6 @@ class Engine:
             if rx.imager.packets > 0:
                 self.last_imager = rx.imager
                 self._note_pass(s)
-            if hasattr(s.source, "progress"):
-                snap.file_progress = s.source.progress
             now = time.monotonic()
             if rx.imager.dirty and now - s._t_prev > 2.0:
                 s._t_prev = now

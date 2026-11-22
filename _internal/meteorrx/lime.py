@@ -360,6 +360,13 @@ class LimeSource(StreamSource):
         self._start_thread(self._run, "lime-stream")
         self._set_lpf()                         # again after start: LimeSDR Mini 2.0 (SatDump does the same)
 
+    def set_gain(self, gain_db: int) -> str:
+        gain = int(min(GAIN_MAX, max(0, gain_db)))
+        if self.lib.LMS_SetGaindB(self.dev, LMS_CH_RX, 0, gain) != 0:
+            raise SdrError(f"LimeSDR gain: {_err(self.lib)}")
+        self.gain_desc = f"{gain} dB"
+        return self.gain_desc
+
     def status(self) -> str:
         s = _Status()
         try:

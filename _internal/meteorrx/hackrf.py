@@ -241,6 +241,16 @@ class HackRfSource(StreamSource):
             raise SdrError(f"HackRF start: {_err(self.lib, r)}")
         self.running = True
 
+    def set_gain(self, lna_gain: int, vga_gain: int) -> str:
+        lna = int(min(40, max(0, lna_gain)) // self.LNA_STEP * self.LNA_STEP)
+        vga = int(min(62, max(0, vga_gain)) // self.VGA_STEP * self.VGA_STEP)
+        for name, result in (("LNA", self.lib.hackrf_set_lna_gain(self.dev, lna)),
+                             ("VGA", self.lib.hackrf_set_vga_gain(self.dev, vga))):
+            if result != 0:
+                raise SdrError(f"HackRF {name} gain: {_err(self.lib, result)}")
+        self.gain_desc = f"LNA {lna} dB, VGA {vga} dB"
+        return self.gain_desc
+
     def stop(self):
         self._stop_evt.set()
         L = self.lib

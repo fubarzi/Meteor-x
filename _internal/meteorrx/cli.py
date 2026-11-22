@@ -1,4 +1,4 @@
-"""Command-line decoding (METEOR-X-cli.exe): IQ recordings or .cadu files -> images."""
+"""Command-line decoding (METEOR-X-cli.exe): .cadu files -> images."""
 from __future__ import annotations
 
 import argparse
@@ -14,13 +14,7 @@ from .receiver import Receiver, ReceiverConfig, dsp_from_config, warm_up
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="METEOR-X-cli", description=f"METEOR-X {__version__} - offline LRPT decoding")
-    ap.add_argument("input", help="IQ recording (.wav .cu8 .cs8 .cs16 .cf32) or .cadu file "
-                                  "(or --selftest, --drivers, --measure MHz [s], --live s [--device D] "
-                                  "[--record file.cs16])")
-    ap.add_argument("--rate", type=float, default=None, help="sample rate (Hz) for raw IQ files")
-    ap.add_argument("--center", type=float, default=None, help="centre frequency of the recording (MHz)")
-    ap.add_argument("--freq", default="137.9,137.1", help="candidate downlink frequencies (MHz)")
-    ap.add_argument("--mode", default="auto", choices=["auto", "72k", "80k"])
+    ap.add_argument("input", help=".cadu file (or --selftest, --drivers, --measure MHz [s], --live s [--device D])")
     ap.add_argument("--out", default=None, help="output folder (default: next to the input)")
     ap.add_argument("--northbound", action="store_true", help="rotate images 180 deg")
     ap.add_argument("--ini", default=None, help="configuration file")
@@ -68,53 +62,23 @@ def main(argv=None) -> int:
         print("\n".join(rep.lines))
         return 0 if rep.chosen else 1
     a = ap.parse_args(argv)
+    if not a.input.lower().endswith(".cadu"):
+        ap.error("only .cadu files are supported")
 
     cfg = config.load(a.ini)
     base = os.path.splitext(os.path.basename(a.input))[0]
     out = a.out or outputs.unique_path(os.path.join(os.path.dirname(os.path.abspath(a.input)), base + "_products"))
     comps = [c.strip() for c in (cfg.get("recording", "composites", "221") or "").split(",") if c.strip()]
     t0 = time.time()
-    if a.input.lower().endswith(".cadu"):
-        im = lrpt.MsuMrImager()
-        n = lrpt.process_cadu_file(a.input, im)
-        print(f"{n} CADUs, {im.packets} MSU-MR packets")
-    else:
-        center = (a.center if a.center is not None else cfg.getf("sdr", "center_mhz", 137.5)) * 1e6
-        src = sdr.FileSource(a.input, a.rate or cfg.getf("sdr", "file_sample_rate", 1e6), center, realtime=False)
-        center = src.center_hz  # saved pass IQ carries its real centre frequency and sample rate
-        freqs = ([center] if src.recording_info else [float(f) * 1e6 for f in a.freq.split(",")])
-        rc = ReceiverConfig(sample_rate=src.sample_rate, center_hz=center,
-                            freqs_hz=freqs, mode=a.mode,
-                            trigger_snr_db=cfg.getf("decoder", "trigger_snr_db", 3.0),
-                            dsp=dsp_from_config(cfg))
-        os.makedirs(out, exist_ok=True)
-        cadu_f = outputs.open_new(os.path.join(out, base + ".cadu"))
-        rx = Receiver(rc, cadu_sink=cadu_f.write)
-        for c in rx.chains:
-            c.time_scale = 0.25
-        last = 0.0
-        while True:
-            blk = src.read(int(src.sample_rate * 0.1))
-            if blk is None:
-                break
-            rx.process(blk)
-            if time.time() - last > 1.0:
-                last = time.time()
-                st = rx.chain_stats()
-                ok = sum(s.frames_ok for s in st)
-                ber = min(s.vit_ber for s in st)
-                print(f"\r{src.progress * 100:5.1f}%  SNR {rx.snr_db:5.1f} dB  BER {ber:.3f}  frames {ok}  "
-                      f"packets {rx.imager.packets}", end="", flush=True)
-        cadu_f.close()
-        print()
-        im = rx.imager
-        for s in rx.chain_stats():
-            print(f"  {s.mode}: frames OK {s.frames_ok}, bad {s.frames_bad}")
+    im = lrpt.MsuMrImager()
+    n = lrpt.process_cadu_file(a.input, im)
+    print(f"{n} CADUs, {im.packets} MSU-MR packets")
     if im.packets == 0:
         print("No imagery decoded.")
         return 2
     files = imaging.save_products(im, out, base, comps, cfg.getb("recording", "fill_missing", True),
-                                  a.northbound, cfg.getb("recording", "ir_inverted", True))
+                                  a.northbound, cfg.getb("recording", "ir_inverted", True),
+                                  texture_fill=cfg.getb("recording", "fill_texture", True))
     print(f"Channels {[c + 1 for c in im.channels_present]} -> {len(files)} file(s) in {out} "
           f"({time.time() - t0:.1f} s)")
     return 0
@@ -122,11 +86,10 @@ def main(argv=None) -> int:
 
 
 def live(argv) -> int:
-    """METEOR-X-cli --live 30 [--device rtlsdr|sdrplay|hackrf|lime|pluto] [--mode 72k] [--record x.cs16]
+    """METEOR-X-cli --live 30 [--device rtlsdr|sdrplay|hackrf|lime|pluto] [--mode 72k]
 
     Receives from the configured SDR for N seconds and prints, every second, the stream health (delivered /
-    nominal sample rate, samples dropped), the carrier (SNR, AFC offset) and the decoder (BER, frames).
-    --record keeps the raw wideband IQ (16-bit) for analysis."""
+    nominal sample rate, samples dropped), the carrier (SNR, AFC offset) and the decoder (BER, frames)."""
     def opt(name, default=None):
         return argv[argv.index(name) + 1] if name in argv and len(argv) > argv.index(name) + 1 else default
     secs = float(opt("--live", "30"))
@@ -139,7 +102,9 @@ def live(argv) -> int:
             sec, key = k.split(".", 1)
             cfg.set(sec, key, v)
     mode = opt("--mode", cfg.get("decoder", "mode", "auto") or "auto")
-    rec = opt("--record")
+    if "--record" in argv:
+        print("ERROR: IQ recording is no longer supported")
+        return 2
     try:
         src = sdr.open_source(cfg)
     except sdr.SdrError as e:
@@ -154,9 +119,6 @@ def live(argv) -> int:
                         ppm=cfg.getf("sdr", "ppm", 0.0), dsp=dsp_from_config(cfg))
     rx = Receiver(rc)
     warm_up(rc)
-    if rec:
-        rec = outputs.unique_path(rec)
-    f = open(rec, "xb") if rec else None
     t_end = time.monotonic() + secs
     last = time.monotonic()
     worst = 1.0
@@ -172,8 +134,6 @@ def live(argv) -> int:
                 break
             if x is None:
                 break
-            if f is not None and len(x):
-                f.write((np.clip(x.view(np.float32), -1, 1) * 32767).astype("<i2").tobytes())
             rx.process(x)
             if time.monotonic() - last >= 1.0:
                 last = time.monotonic()
@@ -188,12 +148,9 @@ def live(argv) -> int:
                       f"frames {st.frames_ok}/{st.frames_bad}  packets {st.packets}", flush=True)
     finally:
         src.stop()
-        if f is not None:
-            f.close()
     h = src.health() or {}
     ok = sum(s.frames_ok for s in rx.chain_stats())
-    print(f"result: {ok} good frames, stream min {100 * worst:.1f} % of nominal, {h.get('dropped', 0)} samples dropped"
-          + (f", IQ saved to {rec} (cs16, {src.sample_rate:.0f} S/s, centre {src.center_hz / 1e6:.3f} MHz)" if rec else ""))
+    print(f"result: {ok} good frames, stream min {100 * worst:.1f} % of nominal, {h.get('dropped', 0)} samples dropped")
     return 0 if ok else 2
 
 

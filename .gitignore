@@ -7,6 +7,14 @@
 !/build_portable.ps1
 !/requirements-build.txt
 !/test_tle_update_during_reception.py
+!/meteorrx.ini
+!/START-HERE.txt
+!/METEOR-X-Mosaic.spec
+!/METEOR-X-cli.spec
+!/METEOR-X-Setup.iss
+!/launch_meteor_x.py
+!/launch_meteor_x_cli.py
+!/build_installer.ps1
 !/_internal/
 !/drivers/
 
@@ -16,6 +24,9 @@
 /_internal/assets/*
 !/_internal/assets/*.png
 !/_internal/assets/*.ico
+!/_internal/assets/weather/
+/_internal/assets/weather/*
+!/_internal/assets/weather/*.png
 /_internal/meteorrx/*
 !/_internal/meteorrx/*.py
 !/_internal/meteorrx/data/

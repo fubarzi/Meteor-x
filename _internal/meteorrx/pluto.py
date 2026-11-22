@@ -263,6 +263,15 @@ class PlutoSource(StreamSource):
         self.bps = self.cli.open_rx(RXDEV, ["voltage0", "voltage1"], self.BUF_SAMPLES)
         self._start_thread(self._stream, "pluto-stream")
 
+    def set_gain(self, gain_db: int) -> str:
+        gain = int(min(71, max(0, gain_db)))
+        for attribute, value in (("gain_control_mode", "manual"), ("hardwaregain", gain)):
+            result = self.cli.write_chn(PHY, False, "voltage0", attribute, value)
+            if result < 0:
+                raise SdrError(f"PlutoSDR {attribute}: update failed ({result})")
+        self.gain_desc = f"{gain} dB"
+        return self.gain_desc
+
     def _stream(self):
         nbytes = self.BUF_SAMPLES * self.bps
         scale = np.float32(1.0 / 2048.0)

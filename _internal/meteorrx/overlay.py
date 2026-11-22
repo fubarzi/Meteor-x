@@ -137,6 +137,16 @@ def font() -> Font:
     return _font
 
 
+def scaled_mask(mask: np.ndarray, scale: float) -> np.ndarray:
+    """Enlarge the baked city font while keeping its pixel edges crisp."""
+    h, w = mask.shape
+    if h == 0 or w == 0 or scale == 1:
+        return mask
+    ys = np.minimum((np.arange(round(h * scale)) / scale).astype(int), h - 1)
+    xs = np.minimum((np.arange(round(w * scale)) / scale).astype(int), w - 1)
+    return mask[np.ix_(ys, xs)]
+
+
 def track_for(satellite: str | None, tle, row_times) -> tuple[geo.Track, float] | None:
     """(track, scan angle) for a decoded pass, or None when it cannot be geolocated.
 
@@ -232,7 +242,8 @@ def draw(img: np.ndarray, track: geo.Track, scan_deg: float, src_width: int, *,
          corrected: bool = False, rotated: bool = False, mirror: bool = False,
          coastlines: bool = True, cities: bool = False, min_pop: int = 200_000,
          max_cities: int = 60, label_gap: int = 90,
-         coast_colour=DEFAULT_COAST, city_colour=DEFAULT_CITY) -> np.ndarray:
+         coast_colour=DEFAULT_COAST, city_colour=DEFAULT_CITY,
+         city_scale: float = 1.3) -> np.ndarray:
     """Return a new RGB copy of `img` with the requested overlays drawn on it.
 
     `src_width` is the width of the decoded image the geolocation refers to (1568 for MSU-MR); set
@@ -327,9 +338,9 @@ def draw(img: np.ndarray, track: geo.Track, scan_deg: float, src_width: int, *,
                     for dx in (-2, -1, 0, 1, 2):
                         if dy * dy + dx * dx <= 5 and 0 <= y + dy < H and 0 <= x + dx < W:
                             rgb[y + dy, x + dx] = city_rgb
-                m = f.mask(name)
+                m = scaled_mask(f.mask(name), city_scale)
                 lx = x + 6 if x + 6 + m.shape[1] < W else x - 6 - m.shape[1]
-                _blit(rgb, m, y - f.ascent // 2, lx, city_rgb, _outline(city_rgb))
+                _blit(rgb, m, y - round(f.ascent * city_scale / 2), lx, city_rgb, _outline(city_rgb))
                 drawn.append((y, x))
                 if len(drawn) >= max_cities:
                     break
