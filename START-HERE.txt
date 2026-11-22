@@ -1,10 +1,11 @@
-METEOR-X 3.1.3 - clean Windows 64-bit package
+METEOR-X 3.1.4 - clean Windows 64-bit package
 ================================================
 METEOR-X is free and open-source software under the GNU GPL v3.
 It is free to download and use. It is a modified version of
 MeteorRX, originally created by amateur radio operator and developer
 Stephan (9H2WB / F5OWB) for the Malta Amateur Radio League.
 This build includes a redesigned interface and additional features.
+Opening a .cadu now picks an image view supported by that recording.
 See LICENSE and README.md for the license and attribution.
 Corresponding source: https://github.com/fubarzi/Meteor-x
 

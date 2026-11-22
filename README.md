@@ -1,6 +1,6 @@
-# METEOR-X 3.1.3 — Meteor-M LRPT receiver
+# METEOR-X 3.1.4 — Meteor-M LRPT receiver
 
-Build **2026.11.22**. **METEOR-X is free and open-source software, based on MeteorRX and released under the GNU GPL v3. It is free to download and use.** This build has a redesigned fluorescent green interface, automatic mapped mosaics, and a live station-weather background.
+Build **2026.11.23**. **METEOR-X is free and open-source software, based on MeteorRX and released under the GNU GPL v3. It is free to download and use.** This build has a redesigned fluorescent green interface, automatic mapped mosaics, and a live station-weather background. Opening a `.cadu` file now selects an available image view when the previous view needs a channel the recording does not contain.
 
 A deliberately simple Windows application that does one thing: receive **Meteor-M N2-3 / N2-4 LRPT** imagery
 with an **RTL-SDR**, an **SDRplay RSP** (any model), a **HackRF One**, a **LimeSDR Mini** (1.x / 2.0) or a
@@ -437,7 +437,7 @@ An externally captured baseband recording of an M2-3 / M2-4 pass is the next val
 
 ## 8. Building the executable
 
-The corresponding source for METEOR-X 3.1.3 is in this repository: the application modules are in
+The corresponding source for METEOR-X 3.1.4 is in this repository: the application modules are in
 `_internal/meteorrx/`, with bundled images and data in `_internal/assets/` and
 `_internal/meteorrx/data/`. The launchers and PyInstaller specifications are at the repository root.
 The Windows downloads are built programs; use the source tree to inspect or modify the software.
@@ -500,7 +500,7 @@ a browser).
 
 Original MeteorRX creator: Stephan, 9H2WB / F5OWB, an amateur radio operator and developer. Original copyright notice: Copyright (C) 2026 Stephan, 9H2WB / F5OWB — Malta Amateur Radio League (MARL).
 
-METEOR-X 3.1.3 (build 2026.11.22) is a modified version with a redesigned interface and additional features. It is free and open-source software released under the GNU General Public License, version 3. Credit for the original code remains with its original authors; credit for subsequent changes belongs to their contributors.
+METEOR-X 3.1.4 (build 2026.11.23) is a modified version with a redesigned interface and additional features. It is free and open-source software released under the GNU General Public License, version 3. Credit for the original code remains with its original authors; credit for subsequent changes belongs to their contributors.
 
 MeteorRX is **GPL-3.0** (`LICENSE`; algorithms derived from SatDump and meteor_decode/meteor_demod, GPL-3.0).
 Bundled components include:

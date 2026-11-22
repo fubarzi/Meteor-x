@@ -938,6 +938,7 @@ class MainWindow(QMainWindow):
         self.engine = Engine(cfg, log_cb=self.logq.put)
         self._cleared_imager = None
         self._opened_image_path = None
+        self._pending_cadu_view = False
         self._live_view_imager = None
         self._preview_rev = -1
         self._auto_enhanced_key = None
@@ -2095,6 +2096,7 @@ class MainWindow(QMainWindow):
 
     def _load_cadu(self, p, *, save_products):
         im = lrpt.MsuMrImager()
+        self.logq.put(f"Opening {os.path.basename(p)}…")
 
         def work():
             n = lrpt.process_cadu_file(p, im)
@@ -2126,9 +2128,29 @@ class MainWindow(QMainWindow):
             }
             self.engine.last_imager = im
             self._auto_enhanced_key = None
+            self._pending_cadu_view = True
             self._force_view = True
 
-        threading.Thread(target=work, daemon=True).start()
+        def guarded_work():
+            try:
+                work()
+            except Exception as exc:  # surface file and decoding errors in the visible log
+                self.logq.put(f"Could not open {os.path.basename(p)}: {exc}")
+
+        threading.Thread(target=guarded_work, daemon=True).start()
+
+    def _select_cadu_view(self):
+        """Show a product the opened recording can actually provide."""
+        im = self.engine.last_imager
+        channels = {channel + 1 for channel in im.channels_present} if im is not None else set()
+        if not channels:
+            return
+        target = "RGB 221" if {1, 2}.issubset(channels) else f"{self.t['ch']} {min(channels)}"
+        index = self.view_sel.findText(target)
+        if index >= 0 and index != self.view_sel.currentIndex():
+            self.view_sel.blockSignals(True)
+            self.view_sel.setCurrentIndex(index)
+            self.view_sel.blockSignals(False)
 
     # -- periodic refresh ------------------------------------------------------
     def _tick(self):
@@ -2195,6 +2217,9 @@ class MainWindow(QMainWindow):
             self._preview_rev = snap.preview_rev
             self._force_view = False
             self._set_saved_image_mode(None)
+            if self._pending_cadu_view:
+                self._pending_cadu_view = False
+                self._select_cadu_view()
             self._refresh_view(force=True)
 
     def _update_passes(self, snap):
