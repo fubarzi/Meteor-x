@@ -939,6 +939,7 @@ class MainWindow(QMainWindow):
         self._cleared_imager = None
         self._opened_image_path = None
         self._pending_cadu_view = False
+        self._auto_live_view = None
         self._live_view_imager = None
         self._preview_rev = -1
         self._auto_enhanced_key = None
@@ -2152,6 +2153,29 @@ class MainWindow(QMainWindow):
             self.view_sel.setCurrentIndex(index)
             self.view_sel.blockSignals(False)
 
+    def _select_live_view(self):
+        """Keep a new pass visible when the selected recipe needs absent channels."""
+        im = self.engine.last_imager
+        channels = {channel + 1 for channel in im.channels_present} if im is not None else set()
+        if not channels:
+            return
+        selected = self.view_sel.currentText()
+        if selected in view_products.PRODUCTS:
+            available = not view_products.missing_channels(selected, dict.fromkeys(channels))
+        elif selected.startswith("RGB "):
+            available = all(int(channel) in channels for channel in selected.split()[1])
+        else:
+            try:
+                available = int(selected.split()[-1]) in channels
+            except (ValueError, IndexError):
+                available = False
+        # A single-channel fallback can become RGB as soon as channel 2 arrives.
+        upgrade = selected == self._auto_live_view and selected != "RGB 221" and {1, 2}.issubset(channels)
+        if available and not upgrade:
+            return
+        self._select_cadu_view()
+        self._auto_live_view = self.view_sel.currentText()
+
     # -- periodic refresh ------------------------------------------------------
     def _tick(self):
         self._tickn += 1
@@ -2219,7 +2243,10 @@ class MainWindow(QMainWindow):
             self._set_saved_image_mode(None)
             if self._pending_cadu_view:
                 self._pending_cadu_view = False
+                self._auto_live_view = None
                 self._select_cadu_view()
+            else:
+                self._select_live_view()
             self._refresh_view(force=True)
 
     def _update_passes(self, snap):

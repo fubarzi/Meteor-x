@@ -15,6 +15,7 @@
 !/launch_meteor_x.py
 !/launch_meteor_x_cli.py
 !/build_installer.ps1
+!/.github/
 !/_internal/
 !/drivers/
 
