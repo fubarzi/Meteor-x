@@ -1,4 +1,4 @@
-METEOR-X 3.1.7 - clean Windows 64-bit package
+METEOR-X 3.1.8 - clean Windows 64-bit package
 ================================================
 METEOR-X is free and open-source software under the GNU GPL v3.
 It is free to download and use. It is a modified version of
@@ -9,6 +9,8 @@ Opening a .cadu now picks an image view supported by that recording.
 Live reception also picks an available view when the selected channels are absent.
 Existing INI files gain map_text_scale = 2.0 if the setting is missing;
 an existing custom value is kept.
+This setting changes city labels on received images and daily maps only;
+the live satellite tracker keeps its normal text size.
 Map overlays stay off empty pixels when image packets are missing.
 See LICENSE and README.md for the license and attribution.
 Corresponding source: https://github.com/fubarzi/Meteor-x

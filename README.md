@@ -1,6 +1,6 @@
-# METEOR-X 3.1.7 — Meteor-M LRPT receiver
+# METEOR-X 3.1.8 — Meteor-M LRPT receiver
 
-Build **2026.11.23**. **METEOR-X is free and open-source software, based on MeteorRX and released under the GNU GPL v3. It is free to download and use.** This build has a redesigned fluorescent green interface, automatic mapped mosaics, and a live station-weather background. Live reception and opening a `.cadu` file select an available image view when the previous view needs a channel the recording does not contain. Coastline and city overlays stay off missing image pixels. Older INI files gain the city text size setting without changing other station settings.
+Build **2026.11.23**. **METEOR-X is free and open-source software, based on MeteorRX and released under the GNU GPL v3. It is free to download and use.** This build has a redesigned fluorescent green interface, automatic mapped mosaics, and a live station-weather background. Live reception and opening a `.cadu` file select an available image view when the previous view needs a channel the recording does not contain. Coastline and city overlays stay off missing image pixels. The INI city text size affects received images and mosaics; live satellite tracker labels keep their normal size.
 
 A deliberately simple Windows application that does one thing: receive **Meteor-M N2-3 / N2-4 LRPT** imagery
 with an **RTL-SDR**, an **SDRplay RSP** (any model), a **HackRF One**, a **LimeSDR Mini** (1.x / 2.0) or a
@@ -109,8 +109,8 @@ remain in their original folders. Use **Composite** above the image to open the
 folder, view the latest daytime or nighttime map, or rebuild a local date from saved passes. A pass requires its TLE and
 scan-line times; older passes can be rebuilt if their `.cadu` recording exists.
 Set `[recording] mosaic_auto = no` to disable automatic updates.
-Set `[recording] map_text_scale = 2.0` to size text on the live tracker and
-city names on received images and daily maps (0.8–2.5; 1.3 is the built-in default).
+Set `[recording] map_text_scale = 2.0` to size city names on received images and
+daily maps (0.8–2.5). The live satellite tracker keeps its normal text size.
 Restart METEOR-X after editing the INI, then rebuild a day's composite to update
 labels in an already saved map.
 
@@ -437,7 +437,7 @@ An externally captured baseband recording of an M2-3 / M2-4 pass is the next val
 
 ## 8. Building the executable
 
-The corresponding source for METEOR-X 3.1.7 is in this repository: the application modules are in
+The corresponding source for METEOR-X 3.1.8 is in this repository: the application modules are in
 `_internal/meteorrx/`, with bundled images and data in `_internal/assets/` and
 `_internal/meteorrx/data/`. The launchers and PyInstaller specifications are at the repository root.
 The Windows downloads are built programs; use the source tree to inspect or modify the software.
@@ -500,7 +500,7 @@ a browser).
 
 Original MeteorRX creator: Stephan, 9H2WB / F5OWB, an amateur radio operator and developer. Original copyright notice: Copyright (C) 2026 Stephan, 9H2WB / F5OWB — Malta Amateur Radio League (MARL).
 
-METEOR-X 3.1.7 (build 2026.11.23) is a modified version with a redesigned interface and additional features. It is free and open-source software released under the GNU General Public License, version 3. Credit for the original code remains with its original authors; credit for subsequent changes belongs to their contributors.
+METEOR-X 3.1.8 (build 2026.11.23) is a modified version with a redesigned interface and additional features. It is free and open-source software released under the GNU General Public License, version 3. Credit for the original code remains with its original authors; credit for subsequent changes belongs to their contributors.
 
 MeteorRX is **GPL-3.0** (`LICENSE`; algorithms derived from SatDump and meteor_decode/meteor_demod, GPL-3.0).
 Bundled components include:

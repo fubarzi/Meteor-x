@@ -400,9 +400,9 @@ class SatelliteTracker(QGroupBox):
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#829ca6;font-size:10px")
         layout.addWidget(hint)
+        # Tracker labels stay at their normal size; the INI scale is for received imagery.
         self.map = TrackerMap((self.observer.lat, self.observer.lon),
-                              cfg.get("station", "callsign", "").strip() or "HOME",
-                              cfg.map_text_scale)
+                              cfg.get("station", "callsign", "").strip() or "HOME")
         self.map.setToolTip(f"{self.observer.lat:.4f}°, {self.observer.lon:.4f}°\n"
                             "Flat world map centred on home longitude\n"
                             "City labels: population 5 million or more\n"
