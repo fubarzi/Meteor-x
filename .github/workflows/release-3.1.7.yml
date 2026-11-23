@@ -1,0 +1,59 @@
+name: Publish METEOR-X 3.1.7
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/release-3.1.7.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.repository == 'fubarzi/Meteor-x'
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build dependencies
+        run: python -m pip install -r requirements-build.txt
+      - name: Build app
+        run: python -m PyInstaller --noconfirm METEOR-X.spec
+      - name: Build Windows packages
+        shell: pwsh
+        run: |
+          $inno = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (!(Test-Path -LiteralPath $inno)) { throw 'Inno Setup compiler is unavailable.' }
+          $env:PATH = "$(Split-Path -Parent $inno);$env:PATH"
+          .\build_installer.ps1
+          Compress-Archive -Path .\cache\installer_stage\* -DestinationPath .\METEOR-X-3.1.7-win64.zip -CompressionLevel Optimal
+          if (!(Test-Path -LiteralPath .\METEOR-X-3.1.7-Setup-win64.exe)) { throw 'Installer was not built.' }
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zipHash = (Get-FileHash .\METEOR-X-3.1.7-win64.zip -Algorithm SHA256).Hash
+          $setupHash = (Get-FileHash .\METEOR-X-3.1.7-Setup-win64.exe -Algorithm SHA256).Hash
+          $notes = @"
+          METEOR-X 3.1.7 includes map_text_scale = 2.0 in the clean INI and adds the setting to older INI files at startup if missing. Existing custom city text sizes and other station settings are preserved. This release also includes the live preview, .cadu and map-overlay fixes.
+
+          METEOR-X is free and open-source software under the GNU GPL v3, based on MeteorRX originally created by Stephan (9H2WB / F5OWB) for the Malta Amateur Radio League.
+
+          Windows 64-bit downloads:
+          - METEOR-X-3.1.7-win64.zip: portable package
+          - METEOR-X-3.1.7-Setup-win64.exe: installer
+
+          Configure your own station location and callsign before use. The source for this release is in the v3.1.7 archive below.
+
+          SHA-256:
+          - METEOR-X-3.1.7-win64.zip: $zipHash
+          - METEOR-X-3.1.7-Setup-win64.exe: $setupHash
+          "@
+          Set-Content -Path release-notes.txt -Value $notes -Encoding utf8
+          gh release create v3.1.7 .\METEOR-X-3.1.7-win64.zip .\METEOR-X-3.1.7-Setup-win64.exe --target $env:GITHUB_SHA --title 'METEOR-X 3.1.7' --notes-file release-notes.txt --latest

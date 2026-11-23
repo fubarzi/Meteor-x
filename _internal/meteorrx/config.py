@@ -140,7 +140,7 @@ geometric_correction = yes
 ; map (25000 is about the smallest that stays readable), raise it for only the big ones.
 city_min_population = 200000
 ; Size multiplier for text on the tracker and city names on images/maps (0.8 to 2.5).
-map_text_scale      = 1.3
+map_text_scale      = 2.0
 ; Housekeeping of Documents\MeteorRX at start-up.
 ; purge_empty: yes = remove folders a pass left completely empty, no = keep them
 purge_empty         = yes
@@ -253,7 +253,7 @@ class Config:
 
     @property
     def map_text_scale(self) -> float:
-        return min(2.5, max(0.8, self.getf("recording", "map_text_scale", 1.3)))
+        return min(2.5, max(0.8, self.getf("recording", "map_text_scale", 2.0)))
 
     @property
     def output_dir(self) -> str:
@@ -339,6 +339,9 @@ def load(path: str | None = None) -> Config:
     defaults = configparser.ConfigParser(interpolation=None)
     defaults.optionxform = str
     defaults.read_string(DEFAULT_INI)
+    stored = configparser.ConfigParser(interpolation=None)
+    stored.optionxform = str
+    stored.read(path, encoding="utf-8")
     cp.read_string(DEFAULT_INI)
     if cp.has_section("satellites"):
         cp.remove_section("satellites")
@@ -348,5 +351,13 @@ def load(path: str | None = None) -> Config:
         for k, v in defaults.items("satellites"):
             cp.set("satellites", k, v)
     cfg = Config(path=path, raw=cp)
+    # The installer preserves older INI files. Add this option once without
+    # replacing a user's existing city text size or other station settings.
+    if not stored.has_option("recording", "map_text_scale"):
+        cfg.set("recording", "map_text_scale", "2.0")
+        try:
+            cfg.save()
+        except OSError:
+            pass  # a read-only INI can still use the in-memory default
     cfg.satellites = _parse_sats(cp)
     return cfg
