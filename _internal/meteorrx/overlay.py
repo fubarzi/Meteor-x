@@ -250,6 +250,9 @@ def draw(img: np.ndarray, track: geo.Track, scan_deg: float, src_width: int, *,
     `corrected` when `img` has been through `geometry.correct`, and `rotated` / `mirror` to match the
     flips the viewer applied, so the overlay lands on the same pixels the user is looking at."""
     rgb = _as_rgb(img)
+    # The geolocation track spans rows even when the receiver lost their image packets.
+    # Keep map marks off those empty pixels, including gaps inside a live pass.
+    received = np.any(rgb != 0, axis=2)
     H, W = rgb.shape[:2]
     cmap = _column_map(src_width, W, corrected)
     # a palette key or a ready-made (r, g, b), so a caller can pass either
@@ -344,4 +347,5 @@ def draw(img: np.ndarray, track: geo.Track, scan_deg: float, src_width: int, *,
                 drawn.append((y, x))
                 if len(drawn) >= max_cities:
                     break
+    rgb[~received] = 0
     return rgb
