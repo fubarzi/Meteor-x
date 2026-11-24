@@ -438,6 +438,17 @@ class WeatherHeader(QFrame):
         p.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
         p.end()
 
+    def mousePressEvent(self, event):
+        # The weather artwork is display only. Keep presses from reaching the
+        # window beneath the header; the child menu bar handles its own clicks.
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        event.accept()
+
     def _paint_condition(self, p):
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         box = QRectF(self.rect())
@@ -1074,7 +1085,7 @@ class MainWindow(QMainWindow):
             return
         request = QNetworkRequest(QUrl(url))
         request.setTransferTimeout(12_000)
-        request.setRawHeader(b"User-Agent", b"METEOR-X/2.0")
+        request.setRawHeader(b"User-Agent", b"METEOR-X/3.2.0")
         reply = self._weather_manager.get(request)
         self._weather_request = reply
         reply.finished.connect(lambda r=reply: self._weather_finished(r))

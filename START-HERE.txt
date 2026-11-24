@@ -1,10 +1,12 @@
-METEOR-X 3.1.8 - clean Windows 64-bit package
+METEOR-X 3.2.0 - clean Windows 64-bit package
 ================================================
 METEOR-X is free and open-source software under the GNU GPL v3.
 It is free to download and use. It is a modified version of
 MeteorRX, originally created by amateur radio operator and developer
 Stephan (9H2WB / F5OWB) for the Malta Amateur Radio League.
 This build includes a redesigned interface and additional features.
+The station-weather header shows local conditions and does not respond to mouse presses.
+Set [gui] language = pt in meteorrx.ini for Português (Portugal).
 Opening a .cadu now picks an image view supported by that recording.
 Live reception also picks an available view when the selected channels are absent.
 Existing INI files gain map_text_scale = 2.0 if the setting is missing;

@@ -1,6 +1,6 @@
-# METEOR-X 3.1.8 — Meteor-M LRPT receiver
+# METEOR-X 3.2.0 — Meteor-M LRPT receiver
 
-Build **2026.11.23**. **METEOR-X is free and open-source software, based on MeteorRX and released under the GNU GPL v3. It is free to download and use.** This build has a redesigned fluorescent green interface, automatic mapped mosaics, and a live station-weather background. Live reception and opening a `.cadu` file select an available image view when the previous view needs a channel the recording does not contain. Coastline and city overlays stay off missing image pixels. The INI city text size affects received images and mosaics; live satellite tracker labels keep their normal size.
+Build **2026.11.25**. **METEOR-X is free and open-source software, based on MeteorRX and released under the GNU GPL v3. It is free to download and use.** This build has a redesigned fluorescent green interface, automatic mapped mosaics, and a live station-weather background. Live reception and opening a `.cadu` file select an available image view when the previous view needs a channel the recording does not contain. Coastline and city overlays stay off missing image pixels. The INI city text size affects received images and mosaics; live satellite tracker labels keep their normal size.
 
 A deliberately simple Windows application that does one thing: receive **Meteor-M N2-3 / N2-4 LRPT** imagery
 with an **RTL-SDR**, an **SDRplay RSP** (any model), a **HackRF One**, a **LimeSDR Mini** (1.x / 2.0) or a
@@ -58,7 +58,8 @@ for the station latitude and longitude in
 code and day/night flag, switching among the bundled sky images. The image is
 illustrative, not a live camera view. If the weather service is unavailable at
 startup, the header stays dark; an image older than one hour is hidden
-after a failed refresh. The header background is display-only.
+after a failed refresh. The weather area only displays local conditions and
+does not respond to mouse presses. The menu row remains usable.
 The compact build badge sits beneath the station callsign on the right.
 Restart METEOR-X after changing the station coordinates in `meteorrx.ini`.
 
@@ -225,7 +226,7 @@ Next to `METEOR-X.exe` (if that folder is read-only, settings go to `%LOCALAPPDA
 | recording | geometric_correction | yes | Also write `..._corr.png`, panoramic correction, 1 km/pixel (§6b) |
 | recording | purge_empty / purge_days | yes / 0 | Start-up housekeeping: drop folders left empty / delete receptions older than N days (0 = never) |
 | recording | rotate_northbound / composites | yes / 221, 123, 124 | North-up; RGB products |
-| gui | language / auto_start | fr / yes | `fr`, `en`, `it`, `es` or `de` (all texts in `meteorrx/i18n.py`: one table per language, English fills any missing key, so adding a language is one more entry); scheduler on at launch |
+| gui | language / auto_start | fr / yes | `fr`, `en`, `it`, `es`, `de` or `pt` (Português de Portugal); scheduler on at launch |
 | gui | window | maximized | `maximized`, `fullscreen` or `last` |
 | gui | audio_volume | 50 | Audio monitor volume (0–100); the monitor always starts muted |
 | decoder | carrier_loop_bw / clock_loop_gain | (empty) | Advanced: Costas bandwidth / clock gain; empty = built-in tested values |
@@ -437,7 +438,7 @@ An externally captured baseband recording of an M2-3 / M2-4 pass is the next val
 
 ## 8. Building the executable
 
-The corresponding source for METEOR-X 3.1.8 is in this repository: the application modules are in
+The corresponding source for METEOR-X 3.2.0 is in this repository: the application modules are in
 `_internal/meteorrx/`, with bundled images and data in `_internal/assets/` and
 `_internal/meteorrx/data/`. The launchers and PyInstaller specifications are at the repository root.
 The Windows downloads are built programs; use the source tree to inspect or modify the software.
@@ -500,7 +501,7 @@ a browser).
 
 Original MeteorRX creator: Stephan, 9H2WB / F5OWB, an amateur radio operator and developer. Original copyright notice: Copyright (C) 2026 Stephan, 9H2WB / F5OWB — Malta Amateur Radio League (MARL).
 
-METEOR-X 3.1.8 (build 2026.11.23) is a modified version with a redesigned interface and additional features. It is free and open-source software released under the GNU General Public License, version 3. Credit for the original code remains with its original authors; credit for subsequent changes belongs to their contributors.
+METEOR-X 3.2.0 (build 2026.11.25) is a modified version with a redesigned interface and additional features. It is free and open-source software released under the GNU General Public License, version 3. Credit for the original code remains with its original authors; credit for subsequent changes belongs to their contributors.
 
 MeteorRX is **GPL-3.0** (`LICENSE`; algorithms derived from SatDump and meteor_decode/meteor_demod, GPL-3.0).
 Bundled components include:

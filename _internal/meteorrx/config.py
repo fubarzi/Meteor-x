@@ -162,7 +162,7 @@ mosaic_auto         = yes
 ir_inverted         = yes
 
 [gui]
-; Interface language: fr | en | it | es | de  (table in meteorrx/i18n.py; add a language there)
+; Interface language: fr | en | it | es | de | pt  (Português de Portugal)
 language        = fr
 ; Green interface highlights by default. Change from the Colour menu in the top bar.
 accent_color    = #4cff9a
