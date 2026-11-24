@@ -1,10 +1,10 @@
-name: Publish METEOR-X 3.2.0
+name: Publish METEOR-X 3.2.1
 
 on:
   push:
     branches: [main]
     paths:
-      - .github/workflows/release-3.2.0.yml
+      - .github/workflows/release-3.2.1.yml
   workflow_dispatch:
 
 permissions:
@@ -31,29 +31,29 @@ jobs:
           if (!(Test-Path -LiteralPath $inno)) { throw 'Inno Setup compiler is unavailable.' }
           $env:PATH = "$(Split-Path -Parent $inno);$env:PATH"
           .\build_installer.ps1
-          Compress-Archive -Path .\cache\installer_stage\* -DestinationPath .\METEOR-X-3.2.0-win64.zip -CompressionLevel Optimal
-          if (!(Test-Path -LiteralPath .\METEOR-X-3.2.0-Setup-win64.exe)) { throw 'Installer was not built.' }
+          Compress-Archive -Path .\cache\installer_stage\* -DestinationPath .\METEOR-X-3.2.1-win64.zip -CompressionLevel Optimal
+          if (!(Test-Path -LiteralPath .\METEOR-X-3.2.1-Setup-win64.exe)) { throw 'Installer was not built.' }
       - name: Publish release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $zipHash = (Get-FileHash .\METEOR-X-3.2.0-win64.zip -Algorithm SHA256).Hash
-          $setupHash = (Get-FileHash .\METEOR-X-3.2.0-Setup-win64.exe -Algorithm SHA256).Hash
+          $zipHash = (Get-FileHash .\METEOR-X-3.2.1-win64.zip -Algorithm SHA256).Hash
+          $setupHash = (Get-FileHash .\METEOR-X-3.2.1-Setup-win64.exe -Algorithm SHA256).Hash
           $notes = @"
-          METEOR-X 3.2.0 adds Português (Portugal) for the interface. The station-weather header shows local conditions from the configured station coordinates and ignores mouse presses; its menu row remains usable. This release also includes the live preview, .cadu, map-overlay and city-label fixes.
+          METEOR-X 3.2.1 lets you click a row in Next passes to highlight that pass's route and peak position on the live tracker. After 15 seconds, the tracker returns to previewing the next upcoming pass. The live satellite markers keep updating.
 
           METEOR-X is free and open-source software under the GNU GPL v3, based on MeteorRX originally created by Stephan (9H2WB / F5OWB) for the Malta Amateur Radio League.
 
           Windows 64-bit downloads:
-          - METEOR-X-3.2.0-win64.zip: portable package
-          - METEOR-X-3.2.0-Setup-win64.exe: installer
+          - METEOR-X-3.2.1-win64.zip: portable package
+          - METEOR-X-3.2.1-Setup-win64.exe: installer
 
-          Configure your own station location and callsign before use. The source for this release is in the v3.2.0 archive below.
+          Configure your own station location and callsign before use. The source for this release is in the v3.2.1 archive below.
 
           SHA-256:
-          - METEOR-X-3.2.0-win64.zip: $zipHash
-          - METEOR-X-3.2.0-Setup-win64.exe: $setupHash
+          - METEOR-X-3.2.1-win64.zip: $zipHash
+          - METEOR-X-3.2.1-Setup-win64.exe: $setupHash
           "@
           Set-Content -Path release-notes.txt -Value $notes -Encoding utf8
-          gh release create v3.2.0 .\METEOR-X-3.2.0-win64.zip .\METEOR-X-3.2.0-Setup-win64.exe --target $env:GITHUB_SHA --title 'METEOR-X 3.2.0' --notes-file release-notes.txt --latest
+          gh release create v3.2.1 .\METEOR-X-3.2.1-win64.zip .\METEOR-X-3.2.1-Setup-win64.exe --target $env:GITHUB_SHA --title 'METEOR-X 3.2.1' --notes-file release-notes.txt --latest

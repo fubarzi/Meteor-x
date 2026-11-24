@@ -45,6 +45,14 @@ def position(sat: orbit.Satellite, when: datetime) -> tuple[float, float, float]
     return math.degrees(lat), lon, height
 
 
+def pass_preview(pas: orbit.Pass) -> tuple[list[tuple[float, float]], tuple[float, float, float]]:
+    """Ground track from AOS to LOS and subpoint at maximum elevation."""
+    steps = max(24, min(90, round(pas.duration_s / 15)))
+    track = [position(pas.sat, pas.aos + (pas.los - pas.aos) * (step / steps))[:2]
+             for step in range(steps + 1)]
+    return track, position(pas.sat, pas.tca)
+
+
 def footprint_boundary(lat_deg: float, lon_deg: float, height_km: float,
                        samples: int = 144) -> list[tuple[float, float]]:
     """Ground points where a satellite is on the geometric 0-degree horizon."""
@@ -74,6 +82,8 @@ class TrackerMap(QWidget):
         self.positions: dict[int, tuple[float, float]] = {}
         self.heights: dict[int, float] = {}
         self.tracks: dict[int, tuple[list[tuple[float, float]], list[tuple[float, float]]]] = {}
+        self.preview_track: list[tuple[float, float]] = []
+        self.preview_peak: tuple[float, float, float] | None = None
         policy = self.sizePolicy()
         policy.setHeightForWidth(True)
         self.setSizePolicy(policy)
@@ -293,6 +303,22 @@ class TrackerMap(QWidget):
                 label_x = max(rect.left() + 2, min(label_x, rect.right() - label_width - 2))
                 label_y = max(rect.top() + 11, min(label_y, rect.bottom() - 2))
                 p.drawText(QPointF(label_x, label_y), name)
+        if self.preview_track:
+            p.setPen(QPen(QColor(255, 216, 103), 3))
+            p.setBrush(Qt.NoBrush)
+            for copy in (-1, 0, 1):
+                self._draw_track(p, self.preview_track, rect, copy)
+        if self.preview_peak is not None:
+            lat, lon, height = self.preview_peak
+            for copy in (-1, 0, 1):
+                p.setPen(QPen(QColor(255, 216, 103, 180), 1.5))
+                p.setBrush(QColor(255, 216, 103, 25))
+                self._draw_footprint(p, lat, lon, height, rect, copy)
+                peak = self._view_point(self._point(lat, lon, rect), rect, copy)
+                if rect.contains(peak):
+                    p.setPen(QPen(QColor(255, 216, 103), 2))
+                    p.setBrush(QColor(255, 216, 103))
+                    p.drawEllipse(peak, 7, 7)
         p.setFont(QFont("Consolas", self._text_size(7)))
         station_base = self._point(*self.station, rect)
         for copy in (-1, 0, 1):
@@ -425,11 +451,36 @@ class SatelliteTracker(QGroupBox):
         self.note.setStyleSheet("color:#9fb3a8;font-size:10px")
         self.note.setToolTip(self.t["tracker_source"])
         layout.addWidget(self.note)
+        self.preview_label = QLabel(self.t["tracker_no_pass"])
+        self.preview_label.setStyleSheet("color:#ffd867;font:9pt Consolas")
+        layout.addWidget(self.preview_label)
+        self._preview_key = None
         self._load_cache()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(1000)
         self._tick()
+
+    def show_pass(self, pas: orbit.Pass | None, *, selected: bool = False):
+        key = ((pas.sat.norad, pas.aos, pas.tca, pas.los, selected)
+               if pas is not None else None)
+        if key == self._preview_key:
+            return
+        self._preview_key = key
+        self.map.preview_track = []
+        self.map.preview_peak = None
+        if pas is None:
+            self.preview_label.setText(self.t["tracker_no_pass"])
+        else:
+            try:
+                self.map.preview_track, self.map.preview_peak = pass_preview(pas)
+            except (ValueError, TypeError, OverflowError):
+                pass
+            template = self.t["tracker_pass_selected" if selected else "tracker_pass_next"]
+            self.preview_label.setText(template.format(
+                sat=pas.sat.name, time=pas.tca.astimezone().strftime("%a %H:%M"),
+                elevation=pas.max_el))
+        self.map.update()
 
     def _load_cache(self):
         cache = orbit.read_tle_file(self.cache_path)

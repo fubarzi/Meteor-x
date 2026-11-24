@@ -956,6 +956,11 @@ class MainWindow(QMainWindow):
         self._auto_enhanced_key = None
         self._last_view_update = 0
         self._build()
+        self._latest_passes: list[orbit.Pass] = []
+        self._selected_pass: orbit.Pass | None = None
+        self._pass_preview_timer = QTimer(self)
+        self._pass_preview_timer.setSingleShot(True)
+        self._pass_preview_timer.timeout.connect(self._show_next_pass)
         self._weather_manager = QNetworkAccessManager(self)
         self._weather_request = None
         self._weather_last_ok = 0.0
@@ -1085,7 +1090,7 @@ class MainWindow(QMainWindow):
             return
         request = QNetworkRequest(QUrl(url))
         request.setTransferTimeout(12_000)
-        request.setRawHeader(b"User-Agent", b"METEOR-X/3.2.0")
+        request.setRawHeader(b"User-Agent", b"METEOR-X/3.2.1")
         reply = self._weather_manager.get(request)
         self._weather_request = reply
         reply.finished.connect(lambda r=reply: self._weather_finished(r))
@@ -1509,7 +1514,9 @@ class MainWindow(QMainWindow):
         self.tbl.verticalHeader().setDefaultSectionSize(20)
         self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.tbl.setSelectionMode(QTableWidget.NoSelection)
+        self.tbl.setSelectionBehavior(QTableWidget.SelectRows)
+        self.tbl.setSelectionMode(QTableWidget.SingleSelection)
+        self.tbl.cellClicked.connect(self._preview_pass_row)
         self.tbl.setMinimumHeight(60)
         pv.addWidget(self.tbl, 1)
         bh.addWidget(g, 1)
@@ -2260,9 +2267,26 @@ class MainWindow(QMainWindow):
                 self._select_live_view()
             self._refresh_view(force=True)
 
+    def _preview_pass_row(self, row: int, _column: int):
+        if not 0 <= row < len(self._latest_passes):
+            return
+        self._selected_pass = self._latest_passes[row]
+        self.tracker.show_pass(self._selected_pass, selected=True)
+        self._pass_preview_timer.start(15_000)
+
+    def _show_next_pass(self):
+        self._selected_pass = None
+        self._pass_preview_timer.stop()
+        self.tracker.show_pass(self._latest_passes[0] if self._latest_passes else None)
+        if self._latest_passes:
+            self.tbl.selectRow(0)
+        else:
+            self.tbl.clearSelection()
+
     def _update_passes(self, snap):
         t = self.t
         ps = snap.passes or []
+        self._latest_passes = ps
         self.tbl.setRowCount(len(ps))
         for i, p in enumerate(ps):
             loc = p.aos.astimezone()
@@ -2273,6 +2297,20 @@ class MainWindow(QMainWindow):
                 if p.max_el >= 40:
                     it.setForeground(ACCENT)
                 self.tbl.setItem(i, j, it)
+        if self._selected_pass is None:
+            self.tracker.show_pass(ps[0] if ps else None)
+            if ps:
+                self.tbl.selectRow(0)
+            else:
+                self.tbl.clearSelection()
+        else:
+            selected_key = (self._selected_pass.sat.norad, self._selected_pass.aos)
+            selected_row = next((i for i, p in enumerate(ps)
+                                 if (p.sat.norad, p.aos) == selected_key), None)
+            if selected_row is not None:
+                self.tbl.selectRow(selected_row)
+            else:
+                self.tbl.clearSelection()
         if ps:
             dt = (ps[0].aos - datetime.now(timezone.utc)).total_seconds()
             if dt > 0:
