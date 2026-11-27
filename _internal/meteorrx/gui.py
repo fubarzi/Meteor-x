@@ -1090,7 +1090,7 @@ class MainWindow(QMainWindow):
             return
         request = QNetworkRequest(QUrl(url))
         request.setTransferTimeout(12_000)
-        request.setRawHeader(b"User-Agent", b"METEOR-X/3.2.1")
+        request.setRawHeader(b"User-Agent", b"METEOR-X/3.2.2")
         reply = self._weather_manager.get(request)
         self._weather_request = reply
         reply.finished.connect(lambda r=reply: self._weather_finished(r))
@@ -1584,7 +1584,7 @@ class MainWindow(QMainWindow):
             self.cfg.save()
         except OSError as exc:
             QMessageBox.warning(self, "METEOR-X", str(exc))
-        apply_dark(QApplication.instance(), colour)
+        apply_dark(QApplication.instance(), colour, self.cfg.geti("gui", "callsign_font_size", 10))
         self.spec_floor_label.setStyleSheet(
             f"font: 700 9px Consolas; color:{theme_color('#5ef7da').name()}")
         self.header_state.setProperty("receiverState", None)
@@ -2611,7 +2611,7 @@ class MainWindow(QMainWindow):
         e.accept()
 
 
-def apply_dark(app: QApplication, accent=None):
+def apply_dark(app: QApplication, accent=None, callsign_font_size=10):
     global ACCENT, _LUT
     chosen = QColor(accent) if accent is not None else QColor(DEFAULT_ACCENT)
     ACCENT = chosen if chosen.isValid() else QColor(DEFAULT_ACCENT)
@@ -2647,7 +2647,7 @@ def apply_dark(app: QApplication, accent=None):
         QLabel#buildBadge { color: #4cff9a; background: #112c1f;
             border: 1px solid #2f7f4e; border-radius: 6px; padding: 3px 7px;
             font-family: Consolas; font-size: 9px; }
-        QLabel#stationBadge { color: #accdb9; font-family: Consolas; font-size: 10px; }
+        QLabel#stationBadge { color: #accdb9; font-family: Consolas; font-size: __CALLSIGN_FONT_SIZE__px; }
         QLabel#workspaceTitle { color: #f0fff5; font-size: 15px; font-weight: 800; }
         QPushButton#clearImageButton { background: #10251d; color: #a8d8bc;
             border-color: #2c5840; padding: 4px 9px; }
@@ -2704,6 +2704,7 @@ def apply_dark(app: QApplication, accent=None):
         QToolTip { background: #173324; color: #eafff1; border: 1px solid #58d988; }
     """
     style = re.sub(r"#[0-9a-fA-F]{6}\b", lambda m: theme_color(m.group()).name(), style)
+    style = style.replace("__CALLSIGN_FONT_SIZE__", str(max(8, min(48, callsign_font_size))))
     app.setStyleSheet(style.replace("__CHECK_ICON__", check_icon.replace("\\", "/")))
     for widget in app.allWidgets():
         if isinstance(widget, DensityWidget) and widget._img is not None:
@@ -2746,7 +2747,8 @@ def main(argv=None):
     if os.path.isfile(ico):
         from PySide6.QtGui import QIcon
         app.setWindowIcon(QIcon(ico))
-    apply_dark(app, cfg.get("gui", "accent_color", DEFAULT_ACCENT.name()))
+    apply_dark(app, cfg.get("gui", "accent_color", DEFAULT_ACCENT.name()),
+               cfg.geti("gui", "callsign_font_size", 10))
     _warm_dsp(app, i18n.normalize(cfg.get("gui", "language", "fr")))
     w = MainWindow(cfg)
     w.show_initial()

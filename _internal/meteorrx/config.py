@@ -164,6 +164,8 @@ ir_inverted         = yes
 [gui]
 ; Interface language: fr | en | it | es | de | pt  (Português de Portugal)
 language        = fr
+; Header callsign size in pixels (8-48). Restart the app after changing it.
+callsign_font_size = 10
 ; Green interface highlights by default. Change from the Colour menu in the top bar.
 accent_color    = #4cff9a
 ; Start the automatic scheduler at launch
@@ -351,10 +353,13 @@ def load(path: str | None = None) -> Config:
         for k, v in defaults.items("satellites"):
             cp.set("satellites", k, v)
     cfg = Config(path=path, raw=cp)
-    # The installer preserves older INI files. Add this option once without
-    # replacing a user's existing city text size or other station settings.
+    # The installer preserves older INI files. Add new options without
+    # replacing a user's existing settings.
     if not stored.has_option("recording", "map_text_scale"):
         cfg.set("recording", "map_text_scale", "2.0")
+    if not stored.has_option("gui", "callsign_font_size"):
+        cfg.set("gui", "callsign_font_size", "10")
+    if cfg._dirty:
         try:
             cfg.save()
         except OSError:
