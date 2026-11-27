@@ -256,7 +256,7 @@ class Config:
 
     @property
     def map_text_scale(self) -> float:
-        return min(5.0, max(0.8, self.getf("recording", "map_text_scale", 4.0)))
+        return min(10.0, max(0.8, self.getf("recording", "map_text_scale", 4.0)))
 
     @property
     def output_dir(self) -> str:

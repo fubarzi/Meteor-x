@@ -919,7 +919,7 @@ class CompositeDialog(FullImageDialog):
         row = QHBoxLayout()
         row.addWidget(QLabel(t["composite_city_size"]))
         size = QDoubleSpinBox()
-        size.setRange(0.8, 5.0)
+        size.setRange(0.8, 10.0)
         size.setSingleStep(0.1)
         size.setDecimals(1)
         size.setValue(self.options["city_scale"])
@@ -1118,7 +1118,7 @@ class MainWindow(QMainWindow):
             return
         request = QNetworkRequest(QUrl(url))
         request.setTransferTimeout(12_000)
-        request.setRawHeader(b"User-Agent", b"METEOR-X/3.2.5")
+        request.setRawHeader(b"User-Agent", b"METEOR-X/3.2.6")
         reply = self._weather_manager.get(request)
         self._weather_request = reply
         reply.finished.connect(lambda r=reply: self._weather_finished(r))
