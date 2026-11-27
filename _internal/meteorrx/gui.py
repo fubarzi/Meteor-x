@@ -1118,7 +1118,7 @@ class MainWindow(QMainWindow):
             return
         request = QNetworkRequest(QUrl(url))
         request.setTransferTimeout(12_000)
-        request.setRawHeader(b"User-Agent", b"METEOR-X/3.2.4")
+        request.setRawHeader(b"User-Agent", b"METEOR-X/3.2.5")
         reply = self._weather_manager.get(request)
         self._weather_request = reply
         reply.finished.connect(lambda r=reply: self._weather_finished(r))
@@ -1475,6 +1475,7 @@ class MainWindow(QMainWindow):
         self.full_image_dlg = None
         self.mosaic_dlg = None
         self._track_cache = (None, None)    # (imager id, (track, scan angle)) - SGP4 once per pass
+        self._overlay_geo = None            # keep a pass's location data paired with its imager
         self._product_track_cache = {}      # one geolocation track per MCIR/MSA source channel
         self._geo_warned = False
         self.btn_enhance = QPushButton(t["enhance"])
@@ -2354,6 +2355,7 @@ class MainWindow(QMainWindow):
         if self._opened_image_path is not None:
             return
         im = self.engine.last_imager
+        lp = dict(self.engine.last_pass or {})
         if im is None or im is self._cleared_imager:
             if getattr(self, "_shown", None) is None:
                 self.img_info.setText(self.t["no_image"])
@@ -2377,7 +2379,6 @@ class MainWindow(QMainWindow):
             track = scan_deg = None
             if sel in ("MCIR", "MSA"):
                 ch = 4 if sel == "MCIR" else 1
-                lp = self.engine.last_pass or {}
                 if not lp.get("tle") or len(im.line_time[ch - 1]) < 2:
                     self._view_unavailable(sel, self.t["view_needs_geo"])
                     return
@@ -2428,7 +2429,7 @@ class MainWindow(QMainWindow):
                  for k, v in (("colour", "enh_colour"), ("infrared", "enh_ir")) if self.enh[k]]
         # same orientation as the saved products: a northbound pass arrives south-first, so without the
         # half turn the picture - and any map drawn on it - would be upside down
-        rotated = bool((self.engine.last_pass or {}).get("rotated"))
+        rotated = bool(lp.get("rotated"))
         if rotated:
             img = img[::-1, ::-1]
         src_w = img.shape[1]
@@ -2440,7 +2441,8 @@ class MainWindow(QMainWindow):
             img = img[:, ::-1]
             marks.append(self.t["mirror"].lower())
         if self.enh["coast"] or self.enh["cities"]:
-            img = self._with_overlay(img, src_w, corrected=self.enh["resize"],
+            img = self._with_overlay(img, src_w, im=im, lp=lp,
+                                     corrected=self.enh["resize"],
                                      rotated=rotated, mirror=mirrored)
             marks += [self.t[v].split(" (")[0].lower()
                       for k, v in (("coast", "enh_coast"), ("cities", "enh_cities")) if self.enh[k]]
@@ -2448,7 +2450,7 @@ class MainWindow(QMainWindow):
             label += " · " + ", ".join(marks)
         self._shown = img
         live = (self.engine.snapshot().state in ("armed", "recording") and
-                not (self.engine.last_pass or {}).get("completed", False))
+                not lp.get("completed", False))
         if live and im is not self._live_view_imager:
             self._live_view_imager = im
             self.view.begin_live_follow()
@@ -2463,11 +2465,11 @@ class MainWindow(QMainWindow):
         self.btn_full_image.setEnabled(True)
         if self.full_image_dlg is not None and self.full_image_dlg.isVisible():
             self.full_image_dlg.update_image(self.view.item.pixmap(), self.img_info.text())
-        self._save_auto_enhanced(sel, img)
+        self._save_auto_enhanced(sel, img, lp)
 
-    def _save_auto_enhanced(self, selection: str, img: np.ndarray):
+    def _save_auto_enhanced(self, selection: str, img: np.ndarray, lp=None):
         """Keep the selected enhanced view beside the finished pass's decoded images."""
-        lp = self.engine.last_pass or {}
+        lp = lp if lp is not None else self.engine.last_pass or {}
         if not lp.get("completed") or not lp.get("folder") or not lp.get("prefix"):
             return
         slug = re.sub(r"[^a-z0-9]+", "_", selection.lower()).strip("_") or "view"
@@ -2512,10 +2514,12 @@ class MainWindow(QMainWindow):
         if self.full_image_dlg is not None:
             self.full_image_dlg.close()
 
-    def _with_overlay(self, img, src_w, *, corrected, rotated, mirror):
+    def _with_overlay(self, img, src_w, *, im, lp, corrected, rotated, mirror):
         """Draw the map overlays on the picture, or hand it back untouched if the pass cannot be placed."""
-        im = self.engine.last_imager
-        lp = self.engine.last_pass or {}
+        if self._overlay_geo is not None and self._overlay_geo[0] is im:
+            satellite, tle = self._overlay_geo[1:]
+        else:
+            satellite, tle = lp.get("satellite"), lp.get("tle")
         chans = im.channels_present if im is not None else []
         ch = chans[0] if chans else None
         # The imager object lives for the whole pass and grows as frames arrive, so caching on its
@@ -2523,11 +2527,11 @@ class MainWindow(QMainWindow):
         # without an overlay. Key on what the track actually depends on.
         extent = im._extent(ch) if ch is not None else None
         offset = getattr(im, "geo_time_offset_s", 0.0)
-        key = (id(im), ch, extent, tuple(lp.get("tle") or ()), offset)
+        key = (id(im), ch, extent, tuple(tle or ()), offset)
         if self._track_cache[0] != key:
             tr = None
             if ch is not None:
-                tr = overlay.track_for(lp.get("satellite"), lp.get("tle"), im.row_times(ch) + offset)
+                tr = overlay.track_for(satellite, tle, im.row_times(ch) + offset)
             self._track_cache = (key, tr)
         tr = self._track_cache[1]
         if tr is None:
@@ -2535,6 +2539,8 @@ class MainWindow(QMainWindow):
                 self._geo_warned = True
                 self.engine.log(self.t["enh_geo_none"])
             return img
+        if self._overlay_geo is None or self._overlay_geo[0] is not im:
+            self._overlay_geo = (im, satellite, tuple(tle))
         track, scan_deg = tr
         try:
             return overlay.draw(img, track, scan_deg, src_w, corrected=corrected, rotated=rotated,

@@ -1,4 +1,4 @@
-METEOR-X 3.2.4 - clean Windows 64-bit package
+METEOR-X 3.2.5 - clean Windows 64-bit package
 ================================================
 METEOR-X is free and open-source software under the GNU GPL v3.
 It is free to download and use. It is a modified version of
