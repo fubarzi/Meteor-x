@@ -1,5 +1,5 @@
 #define AppName "METEOR-X"
-#define AppVersion "3.2.2"
+#define AppVersion "3.2.3"
 #define Stage "cache\installer_stage"
 
 [Setup]
@@ -13,7 +13,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 OutputDir=.
-OutputBaseFilename=METEOR-X-3.2.2-Setup-win64
+OutputBaseFilename=METEOR-X-3.2.3-Setup-win64
 SetupIconFile=_internal\assets\meteor-x.ico
 UninstallDisplayIcon={app}\METEOR-X.exe
 Compression=lzma2

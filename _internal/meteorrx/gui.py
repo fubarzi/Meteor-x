@@ -1090,7 +1090,7 @@ class MainWindow(QMainWindow):
             return
         request = QNetworkRequest(QUrl(url))
         request.setTransferTimeout(12_000)
-        request.setRawHeader(b"User-Agent", b"METEOR-X/3.2.2")
+        request.setRawHeader(b"User-Agent", b"METEOR-X/3.2.3")
         reply = self._weather_manager.get(request)
         self._weather_request = reply
         reply.finished.connect(lambda r=reply: self._weather_finished(r))
@@ -2647,7 +2647,7 @@ def apply_dark(app: QApplication, accent=None, callsign_font_size=10):
         QLabel#buildBadge { color: #4cff9a; background: #112c1f;
             border: 1px solid #2f7f4e; border-radius: 6px; padding: 3px 7px;
             font-family: Consolas; font-size: 9px; }
-        QLabel#stationBadge { color: #accdb9; font-family: Consolas; font-size: __CALLSIGN_FONT_SIZE__px; }
+        QLabel#stationBadge { color: #4cff9a; font-family: Consolas; font-size: __CALLSIGN_FONT_SIZE__px; }
         QLabel#workspaceTitle { color: #f0fff5; font-size: 15px; font-weight: 800; }
         QPushButton#clearImageButton { background: #10251d; color: #a8d8bc;
             border-color: #2c5840; padding: 4px 9px; }
