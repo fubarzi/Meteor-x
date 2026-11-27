@@ -674,8 +674,9 @@ def read_saved_image(path: str) -> np.ndarray:
 class FullImageDialog(QDialog):
     """Full-screen view of the same pixmap shown in the received-image pane."""
 
-    def __init__(self, parent, labels):
+    def __init__(self, parent, labels, *, allow_save=True):
         super().__init__(parent)
+        self.labels = labels
         self.setWindowTitle("METEOR-X - " + labels["full_image"])
         self.setWindowFlag(Qt.Window)
         layout = QVBoxLayout(self)
@@ -685,6 +686,10 @@ class FullImageDialog(QDialog):
         bar.addWidget(self.caption)
         bar.addStretch(1)
         self.toolbar = bar
+        if allow_save:
+            self.save_button = QPushButton(labels["full_save"])
+            self.save_button.clicked.connect(self._save_image)
+            bar.addWidget(self.save_button)
         fit = QPushButton(labels["full_fit"])
         fit.clicked.connect(lambda: self.view.fit_image())
         bar.addWidget(fit)
@@ -703,12 +708,35 @@ class FullImageDialog(QDialog):
         self.caption.setText(caption)
         self.view.show_pixmap(pixmap)
 
+    def _save_image(self):
+        pixmap = self.view.item.pixmap()
+        if pixmap.isNull():
+            return
+        parent = self.parent()
+        source = getattr(parent, "_opened_image_path", None)
+        if source:
+            suggested = os.path.splitext(source)[0] + "_displayed.png"
+        else:
+            last_pass = getattr(parent.engine, "last_pass", None) or {}
+            folder = last_pass.get("folder") or parent.cfg.output_dir
+            stem = last_pass.get("prefix") or "METEOR-X"
+            suggested = os.path.join(folder, f"{stem}_displayed.png")
+        path, _ = QFileDialog.getSaveFileName(
+            self, self.labels["full_save"], outputs.unique_path(suggested), "PNG (*.png)")
+        if not path:
+            return
+        if not path.lower().endswith(".png"):
+            path += ".png"
+        if not pixmap.save(path, "PNG"):
+            QMessageBox.warning(self, self.labels["full_save"],
+                                self.labels["full_save_failed"].format(path=path))
+
 
 class CompositeDialog(FullImageDialog):
     """Preview and save optional enhancements of an already mapped daily composite."""
 
     def __init__(self, parent, labels):
-        super().__init__(parent, labels)
+        super().__init__(parent, labels, allow_save=False)
         self.setWindowTitle("METEOR-X - " + labels["composite"])
         self.labels = labels
         self.source_path = None
@@ -891,7 +919,7 @@ class CompositeDialog(FullImageDialog):
         row = QHBoxLayout()
         row.addWidget(QLabel(t["composite_city_size"]))
         size = QDoubleSpinBox()
-        size.setRange(0.8, 2.5)
+        size.setRange(0.8, 5.0)
         size.setSingleStep(0.1)
         size.setDecimals(1)
         size.setValue(self.options["city_scale"])
@@ -1090,7 +1118,7 @@ class MainWindow(QMainWindow):
             return
         request = QNetworkRequest(QUrl(url))
         request.setTransferTimeout(12_000)
-        request.setRawHeader(b"User-Agent", b"METEOR-X/3.2.3")
+        request.setRawHeader(b"User-Agent", b"METEOR-X/3.2.4")
         reply = self._weather_manager.get(request)
         self._weather_request = reply
         reply.finished.connect(lambda r=reply: self._weather_finished(r))

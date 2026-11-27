@@ -139,8 +139,9 @@ geometric_correction = yes
 ; Smallest city labelled by the "Major cities" overlay in the Enhancements window. Lower it for a denser
 ; map (25000 is about the smallest that stays readable), raise it for only the big ones.
 city_min_population = 200000
-; Size multiplier for city names on received images and daily mosaics (0.8 to 2.5).
-map_text_scale      = 2.0
+; City text size multiplier on received images and daily mosaics (0.8 to 5.0).
+; 4.0 makes city names readable when a full image is fitted to the screen.
+map_text_scale      = 4.0
 ; Housekeeping of Documents\MeteorRX at start-up.
 ; purge_empty: yes = remove folders a pass left completely empty, no = keep them
 purge_empty         = yes
@@ -255,7 +256,7 @@ class Config:
 
     @property
     def map_text_scale(self) -> float:
-        return min(2.5, max(0.8, self.getf("recording", "map_text_scale", 2.0)))
+        return min(5.0, max(0.8, self.getf("recording", "map_text_scale", 4.0)))
 
     @property
     def output_dir(self) -> str:
@@ -356,7 +357,7 @@ def load(path: str | None = None) -> Config:
     # The installer preserves older INI files. Add new options without
     # replacing a user's existing settings.
     if not stored.has_option("recording", "map_text_scale"):
-        cfg.set("recording", "map_text_scale", "2.0")
+        cfg.set("recording", "map_text_scale", "4.0")
     if not stored.has_option("gui", "callsign_font_size"):
         cfg.set("gui", "callsign_font_size", "10")
     if cfg._dirty:

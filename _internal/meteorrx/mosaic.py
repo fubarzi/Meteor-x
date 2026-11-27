@@ -481,7 +481,7 @@ def _build_spec(output_dir: str, day: str, spec: str, period: str, log,
 def build_day(output_dir: str, day: str, log=None, min_city_population: int = 200_000,
               city_label_scale: float = 1.3) -> str | None:
     """Build separate daylight colour and nighttime channel 4 IR mosaics."""
-    city_label_scale = min(2.5, max(0.8, city_label_scale))
+    city_label_scale = min(5.0, max(0.8, city_label_scale))
     rgb124 = _build_spec(output_dir, day, "124", "day", log, min_city_population, city_label_scale)
     rgb123 = _build_spec(output_dir, day, "123", "day", log, min_city_population, city_label_scale)
     night_ir = _build_spec(output_dir, day, "444", "night", log, min_city_population, city_label_scale)
